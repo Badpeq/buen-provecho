@@ -14,6 +14,7 @@ const CATEGORY_ORDER = [
   'huevos',
   'granos',
   'legumbres',
+  'semillas',
   'harinas',
   'aceites',
   'condimentos',
@@ -31,7 +32,8 @@ const CATEGORY_ICON: Record<string, string> = {
   huevos:      '🥚',
   granos:      '🌾',
   legumbres:   '🫘',
-  harinas:     '🌾',
+  semillas:    '🌰',
+  harinas:     '🍞',
   aceites:     '🫒',
   condimentos: '🧂',
   conservas:   '🥫',
@@ -41,23 +43,50 @@ const CATEGORY_ICON: Record<string, string> = {
 
 type ShoppingListItemWithCat = ShoppingListItem & { category: string }
 
+// Mapea el valor real de ingredients.category (inglés) → categoría visual
+const CAT_MAP: Record<string, string> = {
+  // inglés exacto de la DB
+  vegetable:  'verduras',
+  grain:      'granos',
+  dairy:      'lacteos',
+  protein:    'carnes',
+  fruit:      'frutas',
+  spice:      'condimentos',
+  oil:        'aceites',
+  seed:       'semillas',
+  legume:     'legumbres',
+  condiment:  'condimentos',
+  egg:        'huevos',
+  herb:       'condimentos',
+  citrus:     'frutas',
+  nut:        'semillas',
+  fish:       'pescados',
+  seafood:    'pescados',
+  meat:       'carnes',
+  poultry:    'carnes',
+  beverage:   'bebidas',
+  flour:      'harinas',
+  canned:     'conservas',
+  // español (por si acaso)
+  verdura: 'verduras', vegetal: 'verduras',
+  fruta: 'frutas',
+  carne: 'carnes', ave: 'carnes',
+  lacteo: 'lacteos', lácteo: 'lacteos',
+  huevo: 'huevos',
+  grano: 'granos', cereal: 'granos',
+  legumbre: 'legumbres', menestra: 'legumbres',
+  harina: 'harinas',
+  aceite: 'aceites',
+  condimento: 'condimentos', especia: 'condimentos', hierba: 'condimentos',
+  conserva: 'conservas',
+  bebida: 'bebidas',
+  semilla: 'semillas', fruto_seco: 'semillas',
+}
+
 function normalizeCategory(cat: string | null | undefined): string {
   if (!cat) return 'otros'
-  const c = cat.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
-  if (['verdura', 'verduras', 'vegetal', 'vegetales'].includes(c)) return 'verduras'
-  if (['fruta', 'frutas'].includes(c)) return 'frutas'
-  if (['carne', 'carnes', 'aves', 'pollo'].includes(c)) return 'carnes'
-  if (['pescado', 'pescados', 'mariscos', 'seafood'].includes(c)) return 'pescados'
-  if (['lacteo', 'lacteos', 'lácteo', 'lácteos', 'dairy'].includes(c)) return 'lacteos'
-  if (['huevo', 'huevos', 'eggs'].includes(c)) return 'huevos'
-  if (['grano', 'granos', 'cereal', 'cereales'].includes(c)) return 'granos'
-  if (['legumbre', 'legumbres', 'menestras'].includes(c)) return 'legumbres'
-  if (['harina', 'harinas', 'panaderia', 'panadería'].includes(c)) return 'harinas'
-  if (['aceite', 'aceites', 'oil', 'grasa'].includes(c)) return 'aceites'
-  if (['condimento', 'condimentos', 'especia', 'especias'].includes(c)) return 'condimentos'
-  if (['conserva', 'conservas', 'enlatado', 'enlatados'].includes(c)) return 'conservas'
-  if (['bebida', 'bebidas', 'jugo', 'jugos'].includes(c)) return 'bebidas'
-  return 'otros'
+  const c = cat.toLowerCase().trim()
+  return CAT_MAP[c] ?? 'otros'
 }
 
 export default function Compras() {
