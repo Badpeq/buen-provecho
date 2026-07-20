@@ -9,17 +9,28 @@ interface SlotWithDish {
   recipe:     Recipe | null
   assignment: DishAssignment | null
   consumed:   boolean
+  dishSlotId: string | null
 }
 
 const HOY_LABEL = new Intl.DateTimeFormat('es-PE', {
   weekday: 'long', day: 'numeric', month: 'long',
 })
 
+const MEAL_TYPE_FOR_SLOT: Record<string, string> = {
+  Desayuno:  'breakfast',
+  'Snack AM': 'snack',
+  Almuerzo:  'lunch',
+  'Snack PM': 'snack',
+  Cena:      'dinner',
+}
+
 export default function Hoy() {
   const { currentFamily } = useFamilyStore()
-  const [slots,   setSlots]   = useState<SlotWithDish[]>([])
-  const [loading, setLoading] = useState(true)
-  const [consuming, setConsuming] = useState<string | null>(null)
+  const [slots,     setSlots]     = useState<SlotWithDish[]>([])
+  const [loading,   setLoading]   = useState(true)
+  const [picker,    setPicker]    = useState<SlotWithDish | null>(null)
+  const [pickerRecipes, setPickerRecipes] = useState<Recipe[]>([])
+  const [saving,    setSaving]    = useState(false)
 
   const today = new Date().toISOString().slice(0, 10)
 
@@ -43,12 +54,12 @@ export default function Hoy() {
     const plans = (rawPlans ?? []) as { id: string; week_start_date: string }[]
     const planIds = plans.map(p => p.id)
 
-    const assignBySlot: Record<string, { recipe: Recipe; assignment: DishAssignment }> = {}
+    const assignBySlot: Record<string, { recipe: Recipe; assignment: DishAssignment; dishSlotId: string }> = {}
 
     if (planIds.length > 0) {
       const { data: rawBlock } = await supabase
         .from('dish_assignments')
-        .select('*, recipes(*), dish_slots(meal_slot_id, day_offsets), weekly_plans(week_start_date)')
+        .select('*, recipes(*), dish_slots(id, meal_slot_id, day_offsets), weekly_plans(week_start_date)')
         .eq('family_id', currentFamily!.id)
         .eq('is_adhoc', false)
         .in('weekly_plan_id', planIds)
@@ -56,14 +67,16 @@ export default function Hoy() {
 
       blockAssignments.forEach(a => {
         const weekStart  = new Date(((a.weekly_plans as Record<string,string>)?.week_start_date ?? '') + 'T12:00:00')
-        const offsets    = ((a.dish_slots as Record<string, number[]>)?.day_offsets ?? []) as number[]
-        const mealSlotId = (a.dish_slots as Record<string, string>)?.meal_slot_id as string
+        const ds         = a.dish_slots as Record<string, unknown>
+        const offsets    = (ds?.day_offsets ?? []) as number[]
+        const mealSlotId = ds?.meal_slot_id as string
+        const dishSlotId = ds?.id as string
         const recipe     = a.recipes as Recipe
         for (const offset of offsets) {
           const d = new Date(weekStart)
           d.setDate(d.getDate() + offset)
           if (d.toISOString().slice(0, 10) === today && mealSlotId) {
-            assignBySlot[mealSlotId] = { recipe, assignment: a as unknown as DishAssignment }
+            assignBySlot[mealSlotId] = { recipe, assignment: a as unknown as DishAssignment, dishSlotId }
           }
         }
       })
@@ -75,61 +88,65 @@ export default function Hoy() {
       .eq('is_adhoc', true).eq('adhoc_date', today)
     ;(rawAdhoc ?? []).forEach((a: any) => {
       if (a.adhoc_meal_slot_id && a.recipes) {
-        assignBySlot[a.adhoc_meal_slot_id] = { recipe: a.recipes, assignment: a }
+        assignBySlot[a.adhoc_meal_slot_id] = { recipe: a.recipes, assignment: a, dishSlotId: null }
       }
     })
-
-    // Consumos de hoy
-    const { data: rawLogs } = await supabase
-      .from('consumption_logs').select('meal_slot_id')
-      .eq('family_id', currentFamily!.id)
-      .eq('consumed_date', today)
-    const consumedSlots = new Set((rawLogs ?? []).map((l: any) => l.meal_slot_id))
 
     setSlots(mealSlots.map(slot => ({
       slot,
       recipe:     assignBySlot[slot.id]?.recipe     ?? null,
       assignment: assignBySlot[slot.id]?.assignment ?? null,
-      consumed:   consumedSlots.has(slot.id),
+      dishSlotId: assignBySlot[slot.id]?.dishSlotId ?? null,
+      consumed:   false,
     })))
     setLoading(false)
   }
 
-  async function markConsumed(slotWithDish: SlotWithDish) {
-    if (!currentFamily || consuming) return
-    const { slot, recipe, consumed } = slotWithDish
+  async function openPicker(item: SlotWithDish) {
+    const mealType = MEAL_TYPE_FOR_SLOT[item.slot.name] ?? 'lunch'
+    const { data } = await supabase.from('recipes').select('*')
+      .eq('family_id', currentFamily!.id)
+      .eq('meal_type', mealType)
+      .order('name')
+    setPickerRecipes((data ?? []) as Recipe[])
+    setPicker(item)
+  }
 
-    if (consumed) {
-      // Desmarcar
-      await supabase.from('consumption_logs').delete()
-        .eq('family_id', currentFamily.id)
-        .eq('meal_slot_id', slot.id)
-        .eq('consumed_date', today)
-      setSlots(prev => prev.map(s =>
-        s.slot.id === slot.id ? { ...s, consumed: false } : s
-      ))
-      toast.info(`${slot.name} desmarcado`)
-      return
-    }
+  async function assignAdhoc(recipe: Recipe) {
+    if (!picker || !currentFamily || saving) return
+    setSaving(true)
 
-    setConsuming(slot.id)
-    const { error } = await supabase.from('consumption_logs').insert({
-      family_id:     currentFamily.id,
-      meal_slot_id:  slot.id,
-      recipe_id:     slotWithDish.assignment?.recipe_id ?? null,
-      consumed_date: today,
-      notes:         null,
+    // Borrar adhoc previo del mismo slot/día
+    await supabase.from('dish_assignments').delete()
+      .eq('family_id', currentFamily.id)
+      .eq('adhoc_meal_slot_id', picker.slot.id)
+      .eq('adhoc_date', today)
+      .eq('is_adhoc', true)
+
+    const { error } = await supabase.from('dish_assignments').insert({
+      family_id:          currentFamily.id,
+      recipe_id:          recipe.id,
+      is_adhoc:           true,
+      adhoc_meal_slot_id: picker.slot.id,
+      adhoc_date:         today,
     })
-    setConsuming(null)
 
-    if (error) {
-      toast.err('Error al registrar consumo')
-    } else {
-      setSlots(prev => prev.map(s =>
-        s.slot.id === slot.id ? { ...s, consumed: true } : s
-      ))
-      toast.ok(`${recipe?.name ?? slot.name} registrado ✓`)
-    }
+    setSaving(false)
+    if (error) { toast.err('Error al asignar'); setPicker(null); return }
+
+    setSlots(prev => prev.map(s =>
+      s.slot.id === picker.slot.id ? { ...s, recipe, assignment: null, dishSlotId: null } : s
+    ))
+    toast.ok(`${recipe.name} asignado ✓`)
+    setPicker(null)
+  }
+
+  function markConsumed(slotWithDish: SlotWithDish) {
+    const { slot, recipe, consumed } = slotWithDish
+    setSlots(prev => prev.map(s =>
+      s.slot.id === slot.id ? { ...s, consumed: !consumed } : s
+    ))
+    if (!consumed) toast.ok(`${recipe?.name ?? slot.name} ✓`)
   }
 
   if (!currentFamily) {
@@ -149,7 +166,7 @@ export default function Hoy() {
 
       {loading ? (
         <div className="space-y-3">
-          {[1, 2, 3].map(i => (
+          {[1, 2, 3, 4, 5].map(i => (
             <div key={i} className="h-20 rounded-xl bg-gray-100 animate-pulse" />
           ))}
         </div>
@@ -180,39 +197,76 @@ export default function Hoy() {
                 )}
               </div>
 
-              {item.recipe ? (
+              <div className="flex items-center gap-2 shrink-0">
+                {/* Botón cambiar/asignar receta */}
                 <button
-                  disabled={consuming === item.slot.id}
-                  onClick={() => markConsumed(item)}
-                  className={`w-9 h-9 rounded-full border-2 flex items-center justify-center transition-colors shrink-0 ${
-                    item.consumed
-                      ? 'border-green-500 bg-green-500 text-white'
-                      : 'border-[var(--color-brand)] text-[var(--color-brand)] hover:bg-[var(--color-brand-pale)]'
-                  } ${consuming === item.slot.id ? 'opacity-50' : ''}`}
-                  title={item.consumed ? 'Desmarcar' : 'Marcar como consumido'}
+                  onClick={() => openPicker(item)}
+                  className="text-xs px-2 py-1 rounded-lg bg-gray-100 text-gray-500 hover:bg-[var(--color-brand-pale)] hover:text-[var(--color-brand)] transition-colors"
+                  title="Cambiar plato"
                 >
-                  ✓
+                  {item.recipe ? '↺' : '+'}
                 </button>
-              ) : (
-                <button
-                  className="text-xs px-2 py-1 rounded-lg bg-[var(--color-brand-pale)] text-[var(--color-brand)] font-medium"
-                  onClick={() => toast.info('Próximamente: agregar plato a demanda')}
-                >
-                  + Plato
-                </button>
-              )}
+
+                {/* Botón consumir */}
+                {item.recipe && (
+                  <button
+                    onClick={() => markConsumed(item)}
+                    className={`w-9 h-9 rounded-full border-2 flex items-center justify-center transition-colors ${
+                      item.consumed
+                        ? 'border-green-500 bg-green-500 text-white'
+                        : 'border-[var(--color-brand)] text-[var(--color-brand)] hover:bg-[var(--color-brand-pale)]'
+                    }`}
+                    title={item.consumed ? 'Desmarcar' : 'Marcar como consumido'}
+                  >
+                    ✓
+                  </button>
+                )}
+              </div>
             </div>
           ))}
         </div>
       )}
 
-      <button
-        className="fixed bottom-20 right-4 w-12 h-12 rounded-full bg-[var(--color-brand)] text-white shadow-lg text-xl flex items-center justify-center hover:opacity-90 transition"
-        onClick={() => toast.info('Próximamente: agregar plato a demanda')}
-        title="Agregar plato a demanda"
-      >
-        +
-      </button>
+      {/* ── Modal picker adhoc ── */}
+      {picker && (
+        <div
+          className="fixed inset-0 z-50 flex items-end bg-black/40"
+          onClick={() => setPicker(null)}
+        >
+          <div
+            className="w-full bg-white rounded-t-2xl max-h-[80vh] overflow-y-auto"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="sticky top-0 bg-white px-4 pt-4 pb-3 border-b border-gray-100 flex items-center justify-between">
+              <div>
+                <p className="text-xs text-gray-400 uppercase tracking-wide">{picker.slot.name}</p>
+                <h2 className="font-semibold text-gray-800">Elige el plato</h2>
+              </div>
+              <button
+                className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-100 text-gray-500"
+                onClick={() => setPicker(null)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="p-4 space-y-2">
+              {pickerRecipes.map(recipe => (
+                <button
+                  key={recipe.id}
+                  disabled={saving}
+                  onClick={() => assignAdhoc(recipe)}
+                  className="w-full text-left p-3 rounded-xl border border-gray-100 bg-gray-50 hover:border-[var(--color-brand)] hover:bg-[var(--color-brand-pale)] transition-colors disabled:opacity-50"
+                >
+                  <p className="font-medium text-gray-800 text-sm">{recipe.name}</p>
+                  {recipe.description && (
+                    <p className="text-xs text-gray-500 mt-0.5">{recipe.description}</p>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -11,13 +11,22 @@ interface SlotRow {
 
 const DOW_NAMES = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb']
 
+function nextTuesdayFrom(date: Date): string {
+  const d = new Date(date)
+  const dow = d.getDay() // 0=Dom, 2=Mar
+  const daysUntilTue = (2 - dow + 7) % 7 || 7
+  d.setDate(d.getDate() + daysUntilTue)
+  return d.toISOString().slice(0, 10)
+}
+
 export default function Planificacion() {
   const { currentFamily, activePlan, setActivePlan } = useFamilyStore()
-  const [rows,    setRows]    = useState<SlotRow[]>([])
-  const [loading, setLoading] = useState(true)
-  const [recipes, setRecipes] = useState<Recipe[]>([])
-  const [picker,  setPicker]  = useState<DishSlot | null>(null)
-  const [saving,  setSaving]  = useState(false)
+  const [rows,      setRows]      = useState<SlotRow[]>([])
+  const [loading,   setLoading]   = useState(true)
+  const [creating,  setCreating]  = useState(false)
+  const [recipes,   setRecipes]   = useState<Recipe[]>([])
+  const [picker,    setPicker]    = useState<DishSlot | null>(null)
+  const [saving,    setSaving]    = useState(false)
 
   useEffect(() => {
     if (!currentFamily) { setLoading(false); return }
@@ -34,14 +43,18 @@ export default function Planificacion() {
     setRecipes((data ?? []) as Recipe[])
   }
 
-  async function loadPlanAndSlots() {
+  async function loadPlanAndSlots(planToShow?: WeeklyPlan) {
     setLoading(true)
-    const { data: rawPlans } = await supabase
-      .from('weekly_plans').select('*')
-      .eq('family_id', currentFamily!.id)
-      .in('status', ['active', 'planned', 'voting', 'draft'])
-      .order('week_start_date', { ascending: false }).limit(1)
-    const plan = ((rawPlans ?? []) as WeeklyPlan[])[0] ?? null
+    let plan = planToShow ?? null
+
+    if (!plan) {
+      const { data: rawPlans } = await supabase
+        .from('weekly_plans').select('*')
+        .eq('family_id', currentFamily!.id)
+        .in('status', ['active', 'planned', 'voting', 'draft'])
+        .order('week_start_date', { ascending: false }).limit(1)
+      plan = ((rawPlans ?? []) as WeeklyPlan[])[0] ?? null
+    }
     setActivePlan(plan)
 
     if (!plan) { setLoading(false); return }
@@ -70,24 +83,78 @@ export default function Planificacion() {
     setLoading(false)
   }
 
+  async function createWeeklyPlan(weekStartDate: string) {
+    setCreating(true)
+
+    // Comprobar si ya existe un plan para esa semana
+    const { data: existing } = await supabase
+      .from('weekly_plans').select('id')
+      .eq('family_id', currentFamily!.id)
+      .eq('week_start_date', weekStartDate)
+      .limit(1)
+
+    if (existing && existing.length > 0) {
+      toast.info('Ya existe un plan para esa semana')
+      setCreating(false)
+      return
+    }
+
+    const { data: newPlanData, error: planErr } = await supabase
+      .from('weekly_plans').insert({
+        family_id:       currentFamily!.id,
+        week_start_date: weekStartDate,
+        status:          'planned',
+        created_by:      (await supabase.auth.getUser()).data.user?.id,
+      }).select().single()
+
+    if (planErr || !newPlanData) {
+      toast.err('Error al crear el plan')
+      setCreating(false)
+      return
+    }
+
+    const newPlan = newPlanData as WeeklyPlan
+
+    // Copiar asignaciones del plan anterior al nuevo (si existe activePlan)
+    if (activePlan) {
+      const { data: prevAssign } = await supabase
+        .from('dish_assignments').select('*')
+        .eq('weekly_plan_id', activePlan.id)
+        .eq('is_adhoc', false)
+
+      if (prevAssign && prevAssign.length > 0) {
+        const copies = (prevAssign as DishAssignment[]).map(a => ({
+          family_id:      currentFamily!.id,
+          weekly_plan_id: newPlan.id,
+          dish_slot_id:   a.dish_slot_id,
+          recipe_id:      a.recipe_id,
+          is_adhoc:       false,
+        }))
+        await supabase.from('dish_assignments').insert(copies)
+      }
+    }
+
+    toast.ok(`Semana del ${new Date(weekStartDate + 'T12:00:00').toLocaleDateString('es-PE', { day: 'numeric', month: 'short' })} creada ✓`)
+    setCreating(false)
+    await loadPlanAndSlots(newPlan)
+  }
+
   async function assignRecipe(slot: DishSlot, recipe: Recipe) {
     if (!activePlan || saving) return
     setSaving(true)
 
-    // Eliminar assignment existente para este slot en este plan
     await supabase.from('dish_assignments')
       .delete()
       .eq('weekly_plan_id', activePlan.id)
       .eq('dish_slot_id', slot.id)
       .eq('is_adhoc', false)
 
-    // Insertar nuevo
     const { error } = await supabase.from('dish_assignments').insert({
-      family_id:    currentFamily!.id,
+      family_id:      currentFamily!.id,
       weekly_plan_id: activePlan.id,
-      dish_slot_id: slot.id,
-      recipe_id:    recipe.id,
-      is_adhoc:     false,
+      dish_slot_id:   slot.id,
+      recipe_id:      recipe.id,
+      is_adhoc:       false,
     })
 
     setSaving(false)
@@ -122,15 +189,28 @@ export default function Planificacion() {
     )
   }
 
+  const nextWeekStart = activePlan
+    ? (() => { const d = new Date(activePlan.week_start_date + 'T12:00:00'); d.setDate(d.getDate() + 7); return d.toISOString().slice(0, 10) })()
+    : nextTuesdayFrom(new Date())
+
   return (
     <div className="px-4 pt-4">
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-lg font-semibold text-gray-800">Menú semanal</h1>
-        {activePlan && (
-          <span className="text-xs px-2 py-1 rounded-full bg-[var(--color-brand-pale)] text-[var(--color-brand)] font-medium capitalize">
-            {activePlan.status}
-          </span>
-        )}
+        <div className="flex items-center gap-2">
+          {activePlan && (
+            <span className="text-xs px-2 py-1 rounded-full bg-[var(--color-brand-pale)] text-[var(--color-brand)] font-medium capitalize">
+              {activePlan.status}
+            </span>
+          )}
+          <button
+            disabled={creating}
+            onClick={() => createWeeklyPlan(nextWeekStart)}
+            className="text-xs px-3 py-1.5 rounded-lg bg-[var(--color-brand)] text-white font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
+          >
+            {creating ? '…' : activePlan ? '+ Próx. semana' : '+ Crear plan'}
+          </button>
+        </div>
       </div>
 
       {activePlan && (
@@ -149,13 +229,8 @@ export default function Planificacion() {
       ) : !activePlan ? (
         <div className="text-center py-16 text-gray-400">
           <p className="text-4xl mb-3">📋</p>
-          <p>No hay plan activo esta semana.</p>
-          <button
-            className="mt-4 px-4 py-2 rounded-xl bg-[var(--color-brand)] text-white text-sm font-medium"
-            onClick={() => toast.info('Crear plan — próximamente')}
-          >
-            Crear plan
-          </button>
+          <p className="mb-1">No hay plan activo esta semana.</p>
+          <p className="text-xs">Crea uno con el botón de arriba.</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -184,13 +259,6 @@ export default function Planificacion() {
               </div>
             </div>
           ))}
-
-          <button
-            className="w-full mt-2 py-3 rounded-xl border-2 border-dashed border-gray-200 text-sm text-gray-400 hover:border-[var(--color-brand)] hover:text-[var(--color-brand)] transition-colors"
-            onClick={() => toast.info('Plato a demanda — próximamente')}
-          >
-            + Plato a demanda
-          </button>
         </div>
       )}
 
