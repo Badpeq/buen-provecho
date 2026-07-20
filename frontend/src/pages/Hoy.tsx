@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase'
 import { useFamilyStore } from '../store/familyStore'
 import { toast } from '../components/ui/Toast'
 import { limaToday, limaDateStr, limaDateFmt, capitalizeFirst } from '../lib/date'
-import type { DishAssignment, MealSlot, Recipe } from '../types/database'
+import type { DishAssignment, MealSlot, Recipe, DietaryPattern } from '../types/database'
 
 interface SlotWithDish {
   slot:       MealSlot
@@ -22,13 +22,15 @@ const MEAL_TYPE_FOR_SLOT: Record<string, string> = {
 }
 
 export default function Hoy() {
-  const { currentFamily } = useFamilyStore()
+  const { currentFamily, members } = useFamilyStore()
   const [slots,          setSlots]          = useState<SlotWithDish[]>([])
   const [planIdForToday, setPlanIdForToday] = useState<string | null>(null)
   const [loading,        setLoading]        = useState(true)
   const [picker,         setPicker]         = useState<SlotWithDish | null>(null)
   const [pickerRecipes,  setPickerRecipes]  = useState<Recipe[]>([])
   const [saving,         setSaving]         = useState(false)
+  const [memberPatterns,  setMemberPatterns]  = useState<DietaryPattern[]>([])
+  const [attendingBySlot, setAttendingBySlot] = useState<Record<string, string[]>>({})
 
   const today = limaToday()
 
@@ -40,16 +42,17 @@ export default function Hoy() {
   async function load() {
     setLoading(true)
 
-    const { data: rawSlots } = await supabase
-      .from('meal_slots').select('*')
-      .eq('family_id', currentFamily!.id).order('sort_order')
-    const mealSlots = (rawSlots ?? []) as MealSlot[]
-
-    const { data: rawPlans } = await supabase
-      .from('weekly_plans').select('id, week_start_date')
-      .eq('family_id', currentFamily!.id)
-      .in('status', ['planned', 'active'])
-    const plans = (rawPlans ?? []) as { id: string; week_start_date: string }[]
+    // Phase 1: parallel fetches
+    const [{ data: rawSlots }, { data: rawPlans }, { data: rawDP }] = await Promise.all([
+      supabase.from('meal_slots').select('*').eq('family_id', currentFamily!.id).order('sort_order'),
+      supabase.from('weekly_plans').select('id, week_start_date')
+        .eq('family_id', currentFamily!.id).in('status', ['planned', 'active']),
+      supabase.from('dietary_patterns').select('*')
+        .eq('family_id', currentFamily!.id).eq('active', true),
+    ])
+    const mealSlots = rawSlots ?? []
+    const plans     = rawPlans ?? []
+    setMemberPatterns((rawDP ?? []) as DietaryPattern[])
 
     // Find plan whose week contains today
     const todayDate = new Date(today + 'T12:00:00')
@@ -58,7 +61,7 @@ export default function Hoy() {
       const end   = new Date(start)
       end.setDate(end.getDate() + 6)
       return todayDate >= start && todayDate <= end
-    }) ?? plans[0] ?? null  // fallback to most recent plan
+    }) ?? plans[0] ?? null
 
     setPlanIdForToday(planForToday?.id ?? null)
     const planIds = plans.map(p => p.id)
@@ -107,14 +110,57 @@ export default function Hoy() {
       })
     }
 
-    setSlots(mealSlots.map(slot => ({
+    // Load consumed state for today from DB
+    const { data: rawConsumed } = await supabase
+      .from('consumption_log')
+      .select('meal_slot_id')
+      .eq('family_id', currentFamily!.id)
+      .eq('date', today)
+    const consumedSlotIds = new Set((rawConsumed ?? []).map(r => r.meal_slot_id))
+
+    const builtSlots = mealSlots.map(slot => ({
       slot,
       recipe:     assignBySlot[slot.id]?.recipe     ?? null,
       assignment: assignBySlot[slot.id]?.assignment ?? null,
       dishSlotId: assignBySlot[slot.id]?.dishSlotId ?? null,
-      consumed:   false,
-    })))
+      consumed:   consumedSlotIds.has(slot.id),
+    }))
+
+    // Phase 3: fetch attending members for slots with recipes (parallel)
+    const attendingMap: Record<string, string[]> = {}
+    await Promise.all(
+      builtSlots
+        .filter(s => s.recipe !== null)
+        .map(async s => {
+          const { data } = await supabase.rpc('get_attending_members', {
+            p_family_id:    currentFamily!.id,
+            p_meal_slot_id: s.slot.id,
+            p_date:         today,
+          })
+          attendingMap[s.slot.id] = (data ?? []).map(
+            (r: { family_member_id: string }) => r.family_member_id
+          )
+        })
+    )
+    setAttendingBySlot(attendingMap)
+    setSlots(builtSlots)
     setLoading(false)
+  }
+
+  function buildPortionLabel(memberId: string, patterns: DietaryPattern[]): string {
+    const pattern = patterns.find(p => p.family_member_id === memberId)
+    const member  = members.find(m => m.id === memberId)
+    const parts: string[] = []
+    if (pattern) {
+      if (pattern.carb_multiplier < 0.99)       parts.push(`${Math.round(pattern.carb_multiplier * 100)}% carb`)
+      else if (pattern.carb_multiplier > 1.01)   parts.push(`×${pattern.carb_multiplier} carb`)
+      if (Math.abs(pattern.portion_multiplier - 1) > 0.01) parts.push(`×${pattern.portion_multiplier} porción`)
+      if (pattern.require_snacks)                parts.push('snack')
+      if (pattern.notes)                         parts.push(pattern.notes)
+    } else if (member && Math.abs(member.portion_factor - 1) > 0.01) {
+      parts.push(`×${member.portion_factor}`)
+    }
+    return parts.length > 0 ? parts.join(' · ') : 'estándar'
   }
 
   async function openPicker(item: SlotWithDish) {
@@ -166,16 +212,58 @@ export default function Hoy() {
     setSlots(prev => prev.map(s =>
       s.slot.id === picker.slot.id ? { ...s, recipe, assignment: null, dishSlotId: null } : s
     ))
+    // Fetch attending members for newly assigned slot
+    const { data: attending } = await supabase.rpc('get_attending_members', {
+      p_family_id:    currentFamily.id,
+      p_meal_slot_id: picker.slot.id,
+      p_date:         today,
+    })
+    setAttendingBySlot(prev => ({
+      ...prev,
+      [picker.slot.id]: (attending ?? []).map((r: { family_member_id: string }) => r.family_member_id),
+    }))
     toast.ok(`${recipe.name} asignado ✓`)
     setPicker(null)
   }
 
-  function markConsumed(slotWithDish: SlotWithDish) {
-    const { slot, recipe, consumed } = slotWithDish
+  async function toggleConsumed(item: SlotWithDish) {
+    if (!currentFamily || !item.recipe) return
+
+    const next = !item.consumed
+
+    // Optimistic update
     setSlots(prev => prev.map(s =>
-      s.slot.id === slot.id ? { ...s, consumed: !consumed } : s
+      s.slot.id === item.slot.id ? { ...s, consumed: next } : s
     ))
-    if (!consumed) toast.ok(`${recipe?.name ?? slot.name} ✓`)
+
+    if (next) {
+      const { error } = await supabase.from('consumption_log').insert({
+        family_id:   currentFamily.id,
+        date:        today,
+        meal_slot_id: item.slot.id,
+      })
+      if (error) {
+        // Rollback
+        setSlots(prev => prev.map(s =>
+          s.slot.id === item.slot.id ? { ...s, consumed: false } : s
+        ))
+        toast.err('Error al registrar consumo')
+        return
+      }
+      toast.ok(`${item.recipe.name} ✓`)
+    } else {
+      const { error } = await supabase.from('consumption_log').delete()
+        .eq('family_id', currentFamily.id)
+        .eq('date', today)
+        .eq('meal_slot_id', item.slot.id)
+      if (error) {
+        // Rollback
+        setSlots(prev => prev.map(s =>
+          s.slot.id === item.slot.id ? { ...s, consumed: true } : s
+        ))
+        toast.err('Error al desmarcar consumo')
+      }
+    }
   }
 
   if (!currentFamily) {
@@ -224,9 +312,22 @@ export default function Hoy() {
                   )}
                 </p>
                 {item.recipe ? (
-                  <p className={`font-semibold truncate ${item.consumed ? 'text-green-700 line-through' : 'text-gray-800'}`}>
-                    {item.recipe.name}
-                  </p>
+                  <>
+                    <p className={`font-semibold truncate ${item.consumed ? 'text-green-700 line-through' : 'text-gray-800'}`}>
+                      {item.recipe.name}
+                    </p>
+                    {(attendingBySlot[item.slot.id] ?? []).length > 0 && (
+                      <p className="mt-0.5 text-xs text-gray-400 leading-relaxed">
+                        {(attendingBySlot[item.slot.id] ?? [])
+                          .map(id => {
+                            const m = members.find(m => m.id === id)
+                            return m ? `${m.display_name}: ${buildPortionLabel(id, memberPatterns)}` : null
+                          })
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </p>
+                    )}
+                  </>
                 ) : (
                   <p className="text-gray-400 italic text-sm">Sin plato asignado</p>
                 )}
@@ -244,7 +345,7 @@ export default function Hoy() {
 
                 {item.recipe && (
                   <button
-                    onClick={() => markConsumed(item)}
+                    onClick={() => toggleConsumed(item)}
                     className={`w-9 h-9 rounded-full border-2 flex items-center justify-center transition-colors ${
                       item.consumed
                         ? 'border-green-500 bg-green-500 text-white'

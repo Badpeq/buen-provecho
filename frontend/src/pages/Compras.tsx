@@ -2,92 +2,10 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { useFamilyStore } from '../store/familyStore'
 import { toast } from '../components/ui/Toast'
+import { CATEGORY_ORDER, CATEGORY_ICON, normalizeCategory, shareWhatsApp } from '../lib/whatsapp'
 import type { ShoppingList, ShoppingListItem, ItemStatus } from '../types/database'
 
-// Orden de categorías y sus etiquetas visuales
-const CATEGORY_ORDER = [
-  'verduras',
-  'frutas',
-  'carnes',
-  'pescados',
-  'lacteos',
-  'huevos',
-  'granos',
-  'legumbres',
-  'semillas',
-  'harinas',
-  'aceites',
-  'condimentos',
-  'conservas',
-  'bebidas',
-  'otros',
-]
-
-const CATEGORY_ICON: Record<string, string> = {
-  verduras:    '🥬',
-  frutas:      '🍎',
-  carnes:      '🥩',
-  pescados:    '🐟',
-  lacteos:     '🥛',
-  huevos:      '🥚',
-  granos:      '🌾',
-  legumbres:   '🫘',
-  semillas:    '🌰',
-  harinas:     '🍞',
-  aceites:     '🫒',
-  condimentos: '🧂',
-  conservas:   '🥫',
-  bebidas:     '🧃',
-  otros:       '🛒',
-}
-
 type ShoppingListItemWithCat = ShoppingListItem & { category: string }
-
-// Mapea el valor real de ingredients.category (inglés) → categoría visual
-const CAT_MAP: Record<string, string> = {
-  // inglés exacto de la DB
-  vegetable:  'verduras',
-  grain:      'granos',
-  dairy:      'lacteos',
-  protein:    'carnes',
-  fruit:      'frutas',
-  spice:      'condimentos',
-  oil:        'aceites',
-  seed:       'semillas',
-  legume:     'legumbres',
-  condiment:  'condimentos',
-  egg:        'huevos',
-  herb:       'condimentos',
-  citrus:     'frutas',
-  nut:        'semillas',
-  fish:       'pescados',
-  seafood:    'pescados',
-  meat:       'carnes',
-  poultry:    'carnes',
-  beverage:   'bebidas',
-  flour:      'harinas',
-  canned:     'conservas',
-  // español (por si acaso)
-  verdura: 'verduras', vegetal: 'verduras',
-  fruta: 'frutas',
-  carne: 'carnes', ave: 'carnes',
-  lacteo: 'lacteos', lácteo: 'lacteos',
-  huevo: 'huevos',
-  grano: 'granos', cereal: 'granos',
-  legumbre: 'legumbres', menestra: 'legumbres',
-  harina: 'harinas',
-  aceite: 'aceites',
-  condimento: 'condimentos', especia: 'condimentos', hierba: 'condimentos',
-  conserva: 'conservas',
-  bebida: 'bebidas',
-  semilla: 'semillas', fruto_seco: 'semillas',
-}
-
-function normalizeCategory(cat: string | null | undefined): string {
-  if (!cat) return 'otros'
-  const c = cat.toLowerCase().trim()
-  return CAT_MAP[c] ?? 'otros'
-}
 
 export default function Compras() {
   const { currentFamily, activePlan } = useFamilyStore()
@@ -108,7 +26,7 @@ export default function Compras() {
       .from('shopping_lists').select('*')
       .eq('weekly_plan_id', activePlan!.id)
       .order('created_at', { ascending: false }).limit(1)
-    const shoppingList = ((rawLists ?? []) as ShoppingList[])[0] ?? null
+    const shoppingList = (rawLists ?? [])[0] ?? null
     setList(shoppingList)
 
     if (shoppingList) {
@@ -119,7 +37,7 @@ export default function Compras() {
         .eq('shopping_list_id', shoppingList.id)
         .order('display_name')
 
-      const enriched: ShoppingListItemWithCat[] = ((rawItems ?? []) as Array<ShoppingListItem & { ingredient?: { category: string } | null }>).map(i => ({
+      const enriched: ShoppingListItemWithCat[] = ((rawItems ?? []) as unknown as Array<ShoppingListItem & { ingredient?: { category: string } | null }>).map(i => ({
         ...i,
         category: normalizeCategory(i.ingredient?.category ?? null),
       }))
@@ -153,17 +71,6 @@ export default function Compras() {
       next.has(cat) ? next.delete(cat) : next.add(cat)
       return next
     })
-  }
-
-  function toWhatsApp() {
-    const pending = items.filter(i => i.status === 'pending')
-    const grouped: Record<string, ShoppingListItemWithCat[]> = {}
-    pending.forEach(i => { (grouped[i.category] ??= []).push(i) })
-    const lines = CATEGORY_ORDER
-      .filter(cat => grouped[cat])
-      .flatMap(cat => [`*${CATEGORY_ICON[cat] ?? '•'} ${cat.charAt(0).toUpperCase() + cat.slice(1)}*`,
-        ...grouped[cat].map(i => `  • ${i.display_name}: ${i.quantity_to_buy} ${i.unit}`)])
-    window.open(`https://wa.me/?text=${encodeURIComponent(`🛒 Lista de compras\n\n${lines.join('\n')}`)  }`, '_blank')
   }
 
   // Agrupar por categoría (orden predefinido)
@@ -273,6 +180,11 @@ export default function Compras() {
                           <span className={`flex-1 text-sm ${item.status === 'bought' ? 'line-through text-gray-400' : 'text-gray-800'}`}>
                             {item.display_name}
                           </span>
+                          {item.estimated_cost === null && (
+                            <span className="shrink-0 text-xs px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">
+                              sin precio
+                            </span>
+                          )}
                           <span className="text-xs text-gray-500 shrink-0">
                             {item.quantity_to_buy} {item.unit}
                           </span>
@@ -292,7 +204,7 @@ export default function Compras() {
 
           {/* ── Exportar ── */}
           <div className="flex gap-2 pb-4">
-            <button onClick={toWhatsApp}
+            <button onClick={() => shareWhatsApp(items)}
               className="flex-1 py-3 rounded-xl bg-green-500 text-white text-sm font-medium flex items-center justify-center gap-2">
               <span>📲</span> WhatsApp
             </button>

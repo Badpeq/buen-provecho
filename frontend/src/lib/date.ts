@@ -22,3 +22,8 @@ export const limaDateFmt = new Intl.DateTimeFormat('es-PE', {
 export function capitalizeFirst(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1)
 }
+
+/** Día de semana en hora de Lima: 0=Domingo … 6=Sábado */
+export function limaDateDow(): number {
+  return new Date(new Date().toLocaleString('en-US', { timeZone: LIMA_TZ })).getDay()
+}

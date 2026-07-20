@@ -167,9 +167,17 @@ export default function Configuracion() {
 
     if (memberId) {
       // Save health goal (dietary pattern)
-      await supabase.from('dietary_patterns').update({ active: false }).eq('family_member_id', memberId).eq('active', true)
+      const { error: deactivateErr } = await supabase
+        .from('dietary_patterns').update({ active: false })
+        .eq('family_member_id', memberId).eq('active', true)
+      if (deactivateErr) {
+        setSavingMember(false)
+        toast.err('Sin permiso para actualizar el perfil de salud')
+        return
+      }
+
       if (memberDraft.health_goal) {
-        const { data: np } = await supabase.from('dietary_patterns').insert({
+        const { data: np, error: insertPatternErr } = await supabase.from('dietary_patterns').insert({
           family_id:          currentFamily.id,
           family_member_id:   memberId,
           label:              memberDraft.health_goal,
@@ -178,6 +186,11 @@ export default function Configuracion() {
           carb_multiplier:    memberDraft.health_goal === 'perdida_peso' ? 0.8 : memberDraft.health_goal === 'ganancia_muscular' ? 1.2 : 1.0,
           active:             true,
         }).select().single()
+        if (insertPatternErr) {
+          setSavingMember(false)
+          toast.err('Sin permiso para guardar el objetivo de salud')
+          return
+        }
         if (np) {
           setPatterns(prev => [...prev.filter(p => p.family_member_id !== memberId), np as DietaryPattern])
         }
@@ -187,13 +200,14 @@ export default function Configuracion() {
 
       // Save body data (upsert)
       if (memberDraft.weight_kg || memberDraft.height_cm || memberDraft.birth_year) {
-        await supabase.from('member_body_data').upsert({
+        const { error: bodyErr } = await supabase.from('member_body_data').upsert({
           family_member_id: memberId,
           family_id:        currentFamily.id,
           weight_kg:        memberDraft.weight_kg ? parseFloat(memberDraft.weight_kg) : null,
           height_cm:        memberDraft.height_cm ? parseFloat(memberDraft.height_cm) : null,
           birth_year:       memberDraft.birth_year ? parseInt(memberDraft.birth_year) : null,
         })
+        if (bodyErr) toast.err('No se pudieron guardar los datos corporales')
       }
     }
 

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { useFamilyStore } from '../store/familyStore'
 import { toast } from '../components/ui/Toast'
+import { saveRecipeIngredients, type StructuredIngredient } from '../lib/ingredientMatcher'
 import type { Recipe } from '../types/database'
 
 const MEAL_TYPES = [
@@ -25,18 +26,22 @@ interface RecipeDraft {
 }
 
 export default function Recetas() {
-  const { currentFamily } = useFamilyStore()
-  const [recipes,   setRecipes]   = useState<Recipe[]>([])
-  const [filter,    setFilter]    = useState<string>(FILTER_ALL)
-  const [loading,   setLoading]   = useState(true)
-  const [modal,     setModal]     = useState(false)
-  const [draft,     setDraft]     = useState<RecipeDraft>({ name: '', description: '', meal_type: 'lunch', tags: '', ingredients_text: '' })
-  const [saving,    setSaving]    = useState(false)
-  const [deleting,  setDeleting]  = useState(false)
+  const { currentFamily, members } = useFamilyStore()
+  const [recipes,              setRecipes]              = useState<Recipe[]>([])
+  const [filter,               setFilter]               = useState<string>(FILTER_ALL)
+  const [loading,              setLoading]              = useState(true)
+  const [modal,                setModal]                = useState(false)
+  const [draft,                setDraft]                = useState<RecipeDraft>({ name: '', description: '', meal_type: 'lunch', tags: '', ingredients_text: '' })
+  const [saving,               setSaving]               = useState(false)
+  const [deleting,             setDeleting]             = useState(false)
+  const [restrictions,         setRestrictions]         = useState<Array<{ tag: string; restriction_type: string }>>([])
+  const [patterns,             setPatterns]             = useState<Array<{ label: string; carb_multiplier: number; portion_multiplier: number; notes: string | null }>>([])
+  const [availableIngredients, setAvailableIngredients] = useState<string[]>([])
   // AI search
   const [aiQuery,   setAiQuery]   = useState('')
   const [aiLoading, setAiLoading] = useState(false)
   const [showAi,    setShowAi]    = useState(false)
+  const [structuredIngredients, setStructuredIngredients] = useState<StructuredIngredient[]>([])
   // Detail view
   const [detail,    setDetail]    = useState<Recipe | null>(null)
 
@@ -47,14 +52,24 @@ export default function Recetas() {
 
   async function load() {
     setLoading(true)
-    const { data } = await supabase.from('recipes').select('*')
-      .eq('family_id', currentFamily!.id).order('meal_type').order('name')
-    setRecipes((data ?? []) as Recipe[])
+    const [recipesRes, restrictionsRes, patternsRes, pricesRes] = await Promise.all([
+      supabase.from('recipes').select('*').eq('family_id', currentFamily!.id).order('meal_type').order('name'),
+      supabase.from('food_restrictions').select('tag, restriction_type').eq('family_id', currentFamily!.id),
+      supabase.from('dietary_patterns').select('label, carb_multiplier, portion_multiplier, notes')
+        .eq('family_id', currentFamily!.id).eq('active', true),
+      supabase.from('family_ingredient_prices').select('ingredient_id, ingredients(name)').eq('family_id', currentFamily!.id),
+    ])
+    setRecipes((recipesRes.data ?? []) as Recipe[])
+    setRestrictions((restrictionsRes.data ?? []) as typeof restrictions)
+    setPatterns((patternsRes.data ?? []) as typeof patterns)
+    const priceRows = (pricesRes.data ?? []) as unknown as Array<{ ingredient_id: string; ingredients: { name: string } | null }>
+    setAvailableIngredients(priceRows.map(p => p.ingredients?.name).filter(Boolean) as string[])
     setLoading(false)
   }
 
   function openNew() {
     setDraft({ name: '', description: '', meal_type: 'lunch', tags: '', ingredients_text: '' })
+    setStructuredIngredients([])
     setShowAi(false)
     setAiQuery('')
     setModal(true)
@@ -69,6 +84,7 @@ export default function Recetas() {
       tags:             (r.tags ?? []).join(', '),
       ingredients_text: r.ingredients_text ?? '',
     })
+    setStructuredIngredients([])
     setShowAi(false)
     setModal(true)
   }
@@ -77,13 +93,32 @@ export default function Recetas() {
     if (!aiQuery.trim()) return
     setAiLoading(true)
     try {
+      const family_context = {
+        country:               currentFamily!.country_code,
+        currency:              currentFamily!.currency_code,
+        restrictions:          restrictions.map(r => ({ tag: r.tag, type: r.restriction_type })),
+        patterns:              patterns.map(p => ({
+          label:               p.label,
+          carb_multiplier:     p.carb_multiplier,
+          portion_multiplier:  p.portion_multiplier,
+          notes:               p.notes,
+        })),
+        typical_portions:      members.length || 4,
+        meal_slot:             draft.meal_type,
+        available_ingredients: availableIngredients,
+      }
       const res = await fetch('/api/recipe-ai', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: aiQuery }),
+        body: JSON.stringify({ query: aiQuery, family_context }),
       })
       if (!res.ok) throw new Error(await res.text())
-      const data = await res.json() as { name: string; description: string; meal_type: string; tags: string[]; ingredients_text: string }
+      const data = await res.json() as {
+        name: string; description: string; meal_type: string
+        tags: string[]; ingredients_text: string
+        structured_ingredients: StructuredIngredient[]
+        warnings?: string[]
+      }
       setDraft({
         name:             data.name ?? aiQuery,
         description:      data.description ?? '',
@@ -91,8 +126,10 @@ export default function Recetas() {
         tags:             (data.tags ?? []).join(', '),
         ingredients_text: data.ingredients_text ?? '',
       })
+      setStructuredIngredients(data.structured_ingredients ?? [])
       setShowAi(false)
       toast.ok('Receta generada por IA ✓')
+      data.warnings?.forEach((w: string) => toast.err(`⚠️ ${w}`))
     } catch {
       toast.err('Error al buscar con IA. Verifica la configuración.')
     } finally {
@@ -118,11 +155,18 @@ export default function Recetas() {
       setRecipes(prev => prev.map(r => r.id === draft.id ? { ...r, ...payload } : r))
       toast.ok('Receta actualizada ✓')
     } else {
+      const { data: user } = await supabase.auth.getUser()
       const { data, error } = await supabase.from('recipes')
-        .insert({ family_id: currentFamily.id, ...payload }).select().single()
+        .insert({ family_id: currentFamily.id, created_by: user.user?.id, ...payload }).select().single()
       setSaving(false)
       if (error || !data) { toast.err('Error al crear'); return }
-      setRecipes(prev => [...prev, data as Recipe].sort((a, b) => a.name.localeCompare(b.name)))
+      const newRecipe = data as Recipe
+      setRecipes(prev => [...prev, newRecipe].sort((a, b) => a.name.localeCompare(b.name)))
+      if (structuredIngredients.length > 0) {
+        saveRecipeIngredients(
+          structuredIngredients, newRecipe.id, currentFamily.id, currentFamily.country_code
+        ).catch(e => console.warn('saveRecipeIngredients error', e))
+      }
       toast.ok(`${payload.name} creada ✓`)
     }
     setModal(false)

@@ -47,7 +47,8 @@ export interface MealSlot {
 }
 export interface DishSlot {
   id: string; family_id: string; meal_slot_id: string; name: string
-  day_offsets: number[]; sort_order: number; created_at: string
+  day_offsets: number[]; sort_order: number; suggested_tag: string | null
+  created_at: string
 }
 export interface AttendanceRule {
   id: string; family_id: string; family_member_id: string; meal_slot_id: string
@@ -59,7 +60,8 @@ export interface AttendanceOverride {
 }
 export interface Ingredient {
   id: string; family_id: string | null; name: string; category: string
-  base_unit: string; min_purchase_increment: number; tags: string[]; created_at: string
+  base_unit: string; min_purchase_increment: number; tags: string[]
+  needs_price: boolean; created_at: string
 }
 export interface IngredientCountryMap {
   id: string; ingredient_id: string; country_code: string; local_name: string
@@ -71,16 +73,6 @@ export interface Recipe {
   meal_type: string | null; tags: string[]; is_public: boolean
   created_by: string | null; created_at: string; updated_at: string
   ingredients_text: string | null
-}
-export interface MemberBodyData {
-  family_member_id: string; family_id: string
-  birth_year: number | null; height_cm: number | null; weight_kg: number | null
-  updated_at: string
-}
-export interface DietaryPattern {
-  id: string; family_member_id: string; family_id: string; label: string
-  carb_multiplier: number; portion_multiplier: number; require_snacks: boolean
-  notes: string | null; active: boolean; created_at: string
 }
 export interface RecipeIngredient {
   id: string; recipe_id: string; ingredient_id: string
@@ -114,8 +106,10 @@ export interface Vote {
   family_member_id: string; created_at: string
 }
 export interface ConsumptionLog {
-  id: string; family_id: string; dish_assignment_id: string
-  family_member_id: string; consumed_at: string; notes: string | null
+  id: string; family_id: string
+  dish_assignment_id: string | null; family_member_id: string | null
+  consumed_at: string; notes: string | null
+  date: string; meal_slot_id: string
 }
 export interface PantryInventory {
   id: string; family_id: string; ingredient_id: string
@@ -146,7 +140,12 @@ export interface ShoppingListRow {
 // ─── Tipo Database para createClient<Database> ───────────────────────────────
 // Estructura requerida por @supabase/supabase-js v2
 
-type R<T> = { Row: T; Insert: Partial<T>; Update: Partial<T>; Relationships: [] }
+type R<T> = {
+  Row:    T & Record<string, unknown>
+  Insert: Partial<T> & Record<string, unknown>
+  Update: Partial<T> & Record<string, unknown>
+  Relationships: []
+}
 
 export type Database = {
   public: {
@@ -196,6 +195,10 @@ export type Database = {
       generate_shopping_list_snapshot: {
         Args: { p_weekly_plan_id: string; p_deduction_mode?: string }
         Returns: string
+      }
+      estimate_plan_cost: {
+        Args: { p_weekly_plan_id: string }
+        Returns: number
       }
     }
     Enums: Record<string, never>
