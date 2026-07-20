@@ -73,6 +73,8 @@ export interface Recipe {
   meal_type: string | null; tags: string[]; is_public: boolean
   created_by: string | null; created_at: string; updated_at: string
   ingredients_text: string | null
+  batch_friendly: boolean
+  max_batch_days: number
 }
 export interface RecipeIngredient {
   id: string; recipe_id: string; ingredient_id: string
@@ -91,6 +93,8 @@ export interface DishAssignment {
   id: string; weekly_plan_id: string; family_id: string; recipe_id: string
   dish_slot_id: string | null; is_adhoc: boolean
   adhoc_date: string | null; adhoc_meal_slot_id: string | null; created_at: string
+  meal_slot_id: string | null
+  day_offsets:  number[] | null
 }
 export interface VotePoll {
   id: string; weekly_plan_id: string; dish_slot_id: string; status: PollStatus
