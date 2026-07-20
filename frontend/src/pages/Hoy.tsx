@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { useFamilyStore } from '../store/familyStore'
 import { toast } from '../components/ui/Toast'
+import { limaToday, limaDateStr, limaDateFmt, capitalizeFirst } from '../lib/date'
 import type { DishAssignment, MealSlot, Recipe } from '../types/database'
 
 interface SlotWithDish {
@@ -11,10 +12,6 @@ interface SlotWithDish {
   consumed:   boolean
   dishSlotId: string | null
 }
-
-const HOY_LABEL = new Intl.DateTimeFormat('es-PE', {
-  weekday: 'long', day: 'numeric', month: 'long',
-})
 
 const MEAL_TYPE_FOR_SLOT: Record<string, string> = {
   Desayuno:   'breakfast',
@@ -33,7 +30,7 @@ export default function Hoy() {
   const [pickerRecipes,  setPickerRecipes]  = useState<Recipe[]>([])
   const [saving,         setSaving]         = useState(false)
 
-  const today = new Date().toISOString().slice(0, 10)
+  const today = limaToday()
 
   useEffect(() => {
     if (!currentFamily) { setLoading(false); return }
@@ -87,7 +84,7 @@ export default function Hoy() {
         for (const offset of offsets) {
           const d = new Date(weekStart)
           d.setDate(d.getDate() + offset)
-          if (d.toISOString().slice(0, 10) === today && mealSlotId) {
+          if (limaDateStr(d) === today && mealSlotId) {
             assignBySlot[mealSlotId] = { recipe, assignment: a as unknown as DishAssignment, dishSlotId }
           }
         }
@@ -192,8 +189,8 @@ export default function Hoy() {
 
   return (
     <div className="px-4 pt-4">
-      <h1 className="text-lg font-semibold text-gray-800 capitalize mb-4">
-        {HOY_LABEL.format(new Date())}
+      <h1 className="text-lg font-semibold text-gray-800 mb-4">
+        {capitalizeFirst(limaDateFmt.format(new Date()))}
       </h1>
 
       {!planIdForToday && !loading && (

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { useFamilyStore } from '../store/familyStore'
 import { toast } from '../components/ui/Toast'
-import type { FamilyMember, DietaryPattern, FoodRestriction, MemberBodyData } from '../types/database'
+import type { FamilyMember, DietaryPattern, FoodRestriction, MemberBodyData, MealSlot } from '../types/database'
 
 const ROLES = [
   { value: 'owner',         label: 'Propietario' },
@@ -52,6 +52,8 @@ export default function Configuracion() {
   const { currentFamily, members, setMembers, setFamily } = useFamilyStore()
   const [patterns,       setPatterns]       = useState<DietaryPattern[]>([])
   const [restrictions,   setRestrictions]   = useState<FoodRestriction[]>([])
+  const [mealSlots,      setMealSlots]      = useState<MealSlot[]>([])
+  const [savingSlot,     setSavingSlot]     = useState<string | null>(null)
   const [loading,        setLoading]        = useState(true)
 
   const [editFamily,     setEditFamily]     = useState(false)
@@ -80,15 +82,27 @@ export default function Configuracion() {
 
   async function loadData() {
     setLoading(true)
-    const [membersRes, patternsRes, restrictionsRes] = await Promise.all([
+    const [membersRes, patternsRes, restrictionsRes, slotsRes] = await Promise.all([
       supabase.from('family_members').select('*').eq('family_id', currentFamily!.id).order('created_at'),
       supabase.from('dietary_patterns').select('*').eq('family_id', currentFamily!.id).eq('active', true),
       supabase.from('food_restrictions').select('*').eq('family_id', currentFamily!.id),
+      supabase.from('meal_slots').select('*').eq('family_id', currentFamily!.id).order('sort_order'),
     ])
     setMembers((membersRes.data ?? []) as FamilyMember[])
     setPatterns((patternsRes.data ?? []) as DietaryPattern[])
     setRestrictions((restrictionsRes.data ?? []) as FoodRestriction[])
+    setMealSlots((slotsRes.data ?? []) as MealSlot[])
     setLoading(false)
+  }
+
+  async function saveSlotTime(slotId: string, time: string) {
+    setSavingSlot(slotId)
+    const { error } = await supabase.from('meal_slots')
+      .update({ default_time: time || null }).eq('id', slotId)
+    setSavingSlot(null)
+    if (error) { toast.err('Error al guardar'); return }
+    setMealSlots(prev => prev.map(s => s.id === slotId ? { ...s, default_time: time || null } : s))
+    toast.ok('Horario guardado ✓')
   }
 
   async function saveFamily() {
@@ -297,6 +311,32 @@ export default function Configuracion() {
               <button className="mt-3 text-xs text-[var(--color-brand)] underline" onClick={() => setEditFamily(true)}>Editar nombre</button>
             </>
           )}
+        </div>
+      </section>
+
+      {/* ── Horarios de comidas ── */}
+      <section>
+        <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Horarios de comidas</h2>
+        <div className="bg-white rounded-xl border border-gray-100 shadow-sm divide-y divide-gray-50">
+          {mealSlots.map(slot => (
+            <div key={slot.id} className="flex items-center gap-3 px-4 py-3">
+              <div className="flex-1">
+                <p className="text-sm font-medium text-gray-800">{slot.name}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="time"
+                  defaultValue={slot.default_time?.slice(0, 5) ?? ''}
+                  onBlur={e => {
+                    const val = e.target.value
+                    if (val !== (slot.default_time?.slice(0, 5) ?? '')) saveSlotTime(slot.id, val)
+                  }}
+                  className="border border-gray-200 rounded-lg px-2 py-1.5 text-sm text-gray-700 focus:outline-none focus:border-[var(--color-brand)] w-28"
+                />
+                {savingSlot === slot.id && <span className="text-xs text-gray-400">…</span>}
+              </div>
+            </div>
+          ))}
         </div>
       </section>
 

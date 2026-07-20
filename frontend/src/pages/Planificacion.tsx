@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { useFamilyStore } from '../store/familyStore'
 import { toast } from '../components/ui/Toast'
+import { limaToday, limaDateStr } from '../lib/date'
 import type { DishSlot, DishAssignment, Recipe, WeeklyPlan, MealSlot } from '../types/database'
 
 const DOW_NAMES = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb']
@@ -192,7 +193,7 @@ export default function Planificacion() {
   }
 
   const nextWeekStart = activePlan
-    ? (() => { const d = new Date(activePlan.week_start_date + 'T12:00:00'); d.setDate(d.getDate() + 7); return d.toISOString().slice(0, 10) })()
+    ? (() => { const d = new Date(activePlan.week_start_date + 'T12:00:00'); d.setDate(d.getDate() + 7); return limaDateStr(d) })()
     : nextTuesdayFrom(new Date())
 
   return (
@@ -236,7 +237,7 @@ export default function Planificacion() {
         <div className="space-y-4">
           {days.map(day => {
             const dow  = day.date.getDay()
-            const isToday = day.date.toISOString().slice(0, 10) === new Date().toISOString().slice(0, 10)
+            const isToday = limaDateStr(day.date) === limaToday()
             return (
               <div key={day.offset} className={`rounded-xl border bg-white shadow-sm overflow-hidden ${isToday ? 'border-[var(--color-brand)]' : 'border-gray-100'}`}>
                 {/* Cabecera del día */}
