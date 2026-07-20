@@ -10,8 +10,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.112.3",
     "@supabase/supabase-js": "^2.109.0",
+    "@vercel/node": "^5.8.26",
     "lucide-react": "^1.25.0",
+    "pg": "^8.22.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-router-dom": "^7.18.1",

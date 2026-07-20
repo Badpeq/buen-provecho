@@ -70,6 +70,17 @@ export interface Recipe {
   id: string; family_id: string | null; name: string; description: string | null
   meal_type: string | null; tags: string[]; is_public: boolean
   created_by: string | null; created_at: string; updated_at: string
+  ingredients_text: string | null
+}
+export interface MemberBodyData {
+  family_member_id: string; family_id: string
+  birth_year: number | null; height_cm: number | null; weight_kg: number | null
+  updated_at: string
+}
+export interface DietaryPattern {
+  id: string; family_member_id: string; family_id: string; label: string
+  carb_multiplier: number; portion_multiplier: number; require_snacks: boolean
+  notes: string | null; active: boolean; created_at: string
 }
 export interface RecipeIngredient {
   id: string; recipe_id: string; ingredient_id: string

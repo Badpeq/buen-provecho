@@ -17,20 +17,21 @@ const HOY_LABEL = new Intl.DateTimeFormat('es-PE', {
 })
 
 const MEAL_TYPE_FOR_SLOT: Record<string, string> = {
-  Desayuno:  'breakfast',
+  Desayuno:   'breakfast',
   'Snack AM': 'snack',
-  Almuerzo:  'lunch',
+  Almuerzo:   'lunch',
   'Snack PM': 'snack',
-  Cena:      'dinner',
+  Cena:       'dinner',
 }
 
 export default function Hoy() {
   const { currentFamily } = useFamilyStore()
-  const [slots,     setSlots]     = useState<SlotWithDish[]>([])
-  const [loading,   setLoading]   = useState(true)
-  const [picker,    setPicker]    = useState<SlotWithDish | null>(null)
-  const [pickerRecipes, setPickerRecipes] = useState<Recipe[]>([])
-  const [saving,    setSaving]    = useState(false)
+  const [slots,          setSlots]          = useState<SlotWithDish[]>([])
+  const [planIdForToday, setPlanIdForToday] = useState<string | null>(null)
+  const [loading,        setLoading]        = useState(true)
+  const [picker,         setPicker]         = useState<SlotWithDish | null>(null)
+  const [pickerRecipes,  setPickerRecipes]  = useState<Recipe[]>([])
+  const [saving,         setSaving]         = useState(false)
 
   const today = new Date().toISOString().slice(0, 10)
 
@@ -52,6 +53,17 @@ export default function Hoy() {
       .eq('family_id', currentFamily!.id)
       .in('status', ['planned', 'active'])
     const plans = (rawPlans ?? []) as { id: string; week_start_date: string }[]
+
+    // Find plan whose week contains today
+    const todayDate = new Date(today + 'T12:00:00')
+    const planForToday = plans.find(p => {
+      const start = new Date(p.week_start_date + 'T12:00:00')
+      const end   = new Date(start)
+      end.setDate(end.getDate() + 6)
+      return todayDate >= start && todayDate <= end
+    }) ?? plans[0] ?? null  // fallback to most recent plan
+
+    setPlanIdForToday(planForToday?.id ?? null)
     const planIds = plans.map(p => p.id)
 
     const assignBySlot: Record<string, { recipe: Recipe; assignment: DishAssignment; dishSlotId: string }> = {}
@@ -66,7 +78,7 @@ export default function Hoy() {
       const blockAssignments = (rawBlock ?? []) as Array<Record<string, unknown>>
 
       blockAssignments.forEach(a => {
-        const weekStart  = new Date(((a.weekly_plans as Record<string,string>)?.week_start_date ?? '') + 'T12:00:00')
+        const weekStart  = new Date(((a.weekly_plans as Record<string, string>)?.week_start_date ?? '') + 'T12:00:00')
         const ds         = a.dish_slots as Record<string, unknown>
         const offsets    = (ds?.day_offsets ?? []) as number[]
         const mealSlotId = ds?.meal_slot_id as string
@@ -82,15 +94,21 @@ export default function Hoy() {
       })
     }
 
-    const { data: rawAdhoc } = await supabase
-      .from('dish_assignments').select('*, recipes(*)')
-      .eq('family_id', currentFamily!.id)
-      .eq('is_adhoc', true).eq('adhoc_date', today)
-    ;(rawAdhoc ?? []).forEach((a: any) => {
-      if (a.adhoc_meal_slot_id && a.recipes) {
-        assignBySlot[a.adhoc_meal_slot_id] = { recipe: a.recipes, assignment: a, dishSlotId: '' }
-      }
-    })
+    // Adhoc overrides for today
+    if (planForToday) {
+      const { data: rawAdhoc } = await supabase
+        .from('dish_assignments').select('*, recipes(*)')
+        .eq('family_id', currentFamily!.id)
+        .eq('weekly_plan_id', planForToday.id)
+        .eq('is_adhoc', true).eq('adhoc_date', today)
+      ;(rawAdhoc ?? []).forEach((a: Record<string, unknown>) => {
+        const adhocSlotId = a.adhoc_meal_slot_id as string | null
+        const recipes = a.recipes as Recipe | null
+        if (adhocSlotId && recipes) {
+          assignBySlot[adhocSlotId] = { recipe: recipes, assignment: a as unknown as DishAssignment, dishSlotId: '' }
+        }
+      })
+    }
 
     setSlots(mealSlots.map(slot => ({
       slot,
@@ -114,17 +132,26 @@ export default function Hoy() {
 
   async function assignAdhoc(recipe: Recipe) {
     if (!picker || !currentFamily || saving) return
+
+    if (!planIdForToday) {
+      toast.err('No hay plan activo para esta semana')
+      setPicker(null)
+      return
+    }
+
     setSaving(true)
 
     // Borrar adhoc previo del mismo slot/día
     await supabase.from('dish_assignments').delete()
       .eq('family_id', currentFamily.id)
+      .eq('weekly_plan_id', planIdForToday)
       .eq('adhoc_meal_slot_id', picker.slot.id)
       .eq('adhoc_date', today)
       .eq('is_adhoc', true)
 
     const { error } = await supabase.from('dish_assignments').insert({
       family_id:          currentFamily.id,
+      weekly_plan_id:     planIdForToday,
       recipe_id:          recipe.id,
       is_adhoc:           true,
       adhoc_meal_slot_id: picker.slot.id,
@@ -132,7 +159,12 @@ export default function Hoy() {
     })
 
     setSaving(false)
-    if (error) { toast.err('Error al asignar'); setPicker(null); return }
+    if (error) {
+      console.error('adhoc insert error:', error)
+      toast.err(`Error: ${error.message}`)
+      setPicker(null)
+      return
+    }
 
     setSlots(prev => prev.map(s =>
       s.slot.id === picker.slot.id ? { ...s, recipe, assignment: null, dishSlotId: null } : s
@@ -163,6 +195,12 @@ export default function Hoy() {
       <h1 className="text-lg font-semibold text-gray-800 capitalize mb-4">
         {HOY_LABEL.format(new Date())}
       </h1>
+
+      {!planIdForToday && !loading && (
+        <div className="mb-4 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-700">
+          No hay plan activo para esta semana. Crea uno en Planificación para asignar platos.
+        </div>
+      )}
 
       {loading ? (
         <div className="space-y-3">
@@ -198,16 +236,15 @@ export default function Hoy() {
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
-                {/* Botón cambiar/asignar receta */}
                 <button
                   onClick={() => openPicker(item)}
-                  className="text-xs px-2 py-1 rounded-lg bg-gray-100 text-gray-500 hover:bg-[var(--color-brand-pale)] hover:text-[var(--color-brand)] transition-colors"
-                  title="Cambiar plato"
+                  disabled={!planIdForToday}
+                  className="text-xs px-2 py-1 rounded-lg bg-gray-100 text-gray-500 hover:bg-[var(--color-brand-pale)] hover:text-[var(--color-brand)] transition-colors disabled:opacity-30"
+                  title={planIdForToday ? 'Cambiar plato' : 'No hay plan activo'}
                 >
                   {item.recipe ? '↺' : '+'}
                 </button>
 
-                {/* Botón consumir */}
                 {item.recipe && (
                   <button
                     onClick={() => markConsumed(item)}
@@ -216,7 +253,6 @@ export default function Hoy() {
                         ? 'border-green-500 bg-green-500 text-white'
                         : 'border-[var(--color-brand)] text-[var(--color-brand)] hover:bg-[var(--color-brand-pale)]'
                     }`}
-                    title={item.consumed ? 'Desmarcar' : 'Marcar como consumido'}
                   >
                     ✓
                   </button>
@@ -229,28 +265,19 @@ export default function Hoy() {
 
       {/* ── Modal picker adhoc ── */}
       {picker && (
-        <div
-          className="fixed inset-0 z-50 flex items-end bg-black/40"
-          onClick={() => setPicker(null)}
-        >
-          <div
-            className="w-full bg-white rounded-t-2xl max-h-[80vh] overflow-y-auto"
-            onClick={e => e.stopPropagation()}
-          >
+        <div className="fixed inset-0 z-50 flex items-end bg-black/40" onClick={() => setPicker(null)}>
+          <div className="w-full bg-white rounded-t-2xl max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="sticky top-0 bg-white px-4 pt-4 pb-3 border-b border-gray-100 flex items-center justify-between">
               <div>
                 <p className="text-xs text-gray-400 uppercase tracking-wide">{picker.slot.name}</p>
                 <h2 className="font-semibold text-gray-800">Elige el plato</h2>
               </div>
-              <button
-                className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-100 text-gray-500"
-                onClick={() => setPicker(null)}
-              >
-                ✕
-              </button>
+              <button className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-100 text-gray-500" onClick={() => setPicker(null)}>✕</button>
             </div>
             <div className="p-4 space-y-2">
-              {pickerRecipes.map(recipe => (
+              {pickerRecipes.length === 0 ? (
+                <p className="text-center text-gray-400 py-8 text-sm">No hay recetas de este tipo. Crea una en la sección Recetas.</p>
+              ) : pickerRecipes.map(recipe => (
                 <button
                   key={recipe.id}
                   disabled={saving}
@@ -258,9 +285,7 @@ export default function Hoy() {
                   className="w-full text-left p-3 rounded-xl border border-gray-100 bg-gray-50 hover:border-[var(--color-brand)] hover:bg-[var(--color-brand-pale)] transition-colors disabled:opacity-50"
                 >
                   <p className="font-medium text-gray-800 text-sm">{recipe.name}</p>
-                  {recipe.description && (
-                    <p className="text-xs text-gray-500 mt-0.5">{recipe.description}</p>
-                  )}
+                  {recipe.description && <p className="text-xs text-gray-500 mt-0.5">{recipe.description}</p>}
                 </button>
               ))}
             </div>
