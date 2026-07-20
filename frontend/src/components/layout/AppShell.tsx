@@ -4,6 +4,7 @@ const NAV = [
   { to: '/',              label: 'Hoy',          icon: '🍽️' },
   { to: '/planificacion', label: 'Planificación', icon: '📅' },
   { to: '/compras',       label: 'Compras',       icon: '🛒' },
+  { to: '/recetas',       label: 'Recetas',       icon: '📖' },
   { to: '/configuracion', label: 'Config',        icon: '⚙️' },
 ]
 

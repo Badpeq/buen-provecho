@@ -6,6 +6,7 @@ import Hoy                  from './pages/Hoy'
 import Planificacion        from './pages/Planificacion'
 import Compras              from './pages/Compras'
 import Configuracion        from './pages/Configuracion'
+import Recetas              from './pages/Recetas'
 import Session              from './pages/Session'
 import { ToastContainer }   from './components/ui/Toast'
 
@@ -35,6 +36,7 @@ function AuthGate() {
         <Route index                element={<Hoy />} />
         <Route path="planificacion" element={<Planificacion />} />
         <Route path="compras"       element={<Compras />} />
+        <Route path="recetas"       element={<Recetas />} />
         <Route path="configuracion" element={<Configuracion />} />
       </Route>
     </Routes>
