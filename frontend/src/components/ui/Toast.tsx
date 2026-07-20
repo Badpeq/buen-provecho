@@ -1,4 +1,3 @@
-import { useEffect, useState } from 'react'
 import { create } from 'zustand'
 
 interface ToastMsg { id: number; text: string; type: 'info' | 'ok' | 'err' }

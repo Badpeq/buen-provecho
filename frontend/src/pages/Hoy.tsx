@@ -88,7 +88,7 @@ export default function Hoy() {
       .eq('is_adhoc', true).eq('adhoc_date', today)
     ;(rawAdhoc ?? []).forEach((a: any) => {
       if (a.adhoc_meal_slot_id && a.recipes) {
-        assignBySlot[a.adhoc_meal_slot_id] = { recipe: a.recipes, assignment: a, dishSlotId: null }
+        assignBySlot[a.adhoc_meal_slot_id] = { recipe: a.recipes, assignment: a, dishSlotId: '' }
       }
     })
 
