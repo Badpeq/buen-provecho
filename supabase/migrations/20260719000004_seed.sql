@@ -280,31 +280,36 @@ BEGIN
 
 
   -- ────────────────────────────────────────────────────────
-  -- PRECIOS REFERENCIALES (PEN, julio 2026)
+  -- PRECIOS REFERENCIALES (PEN, julio 2026) — precio por base_unit (g, ml, unit)
+  -- Fórmula: precio_mercado / unidad_de_compra
+  --   g-bulk  (carne, papa, etc.): S/X/kg   → X / 1000
+  --   g-pack  (quinua, lentejas):  S/X/bag  → X / gramos_bolsa
+  --   ml-pack (aceite, leche):     S/X/env  → X / ml_envase
+  --   unit    (huevo, limón):      S/X/unit (huevo: S/5.50 por 6 → 5.50/6)
   -- ────────────────────────────────────────────────────────
   INSERT INTO family_ingredient_prices (family_id, ingredient_id, price, unit) VALUES
-    (v_family_id, v_ing_pollo,     9.00,  'g'),    -- S/9.00 por 100g aprox.
-    (v_family_id, v_ing_aji_am,    2.50,  'g'),
-    (v_family_id, v_ing_papa_am,   2.50,  'g'),    -- S/2.50 por 500g
-    (v_family_id, v_ing_leche_ev,  3.50,  'ml'),   -- S/3.50 por lata 400ml
-    (v_family_id, v_ing_nuez,     18.00,  'g'),
-    (v_family_id, v_ing_queso_p,   8.00,  'g'),
-    (v_family_id, v_ing_cebolla,   1.50,  'g'),
-    (v_family_id, v_ing_ajo,       2.00,  'g'),
-    (v_family_id, v_ing_aceite,    8.00,  'ml'),   -- S/8.00 por 250ml
-    (v_family_id, v_ing_vainita,   4.00,  'g'),
-    (v_family_id, v_ing_res,      18.00,  'g'),
-    (v_family_id, v_ing_papa_b,    3.00,  'g'),    -- S/3.00 por kg
-    (v_family_id, v_ing_tomate,    2.00,  'g'),
-    (v_family_id, v_ing_sillao,    3.50,  'ml'),   -- S/3.50 por botella 150ml
-    (v_family_id, v_ing_quinua,    7.00,  'g'),    -- S/7.00 por 250g
-    (v_family_id, v_ing_zanahoria, 1.50,  'g'),
-    (v_family_id, v_ing_arveja,    3.00,  'g'),
-    (v_family_id, v_ing_lenteja,   4.00,  'g'),    -- S/4.00 por 500g
-    (v_family_id, v_ing_huevo,     5.50,  'unit'), -- S/5.50 por 6 huevos
-    (v_family_id, v_ing_cebolla_r, 1.50,  'g'),
-    (v_family_id, v_ing_limon,     0.20,  'unit'),
-    (v_family_id, v_ing_culantro,  0.50,  'g');
+    (v_family_id, v_ing_pollo,     0.009000, 'g'),   -- S/9.00/kg
+    (v_family_id, v_ing_aji_am,    0.002500, 'g'),   -- S/2.50/kg
+    (v_family_id, v_ing_papa_am,   0.002500, 'g'),   -- S/2.50/kg
+    (v_family_id, v_ing_leche_ev,  0.008750, 'ml'),  -- S/3.50 por lata 400ml
+    (v_family_id, v_ing_nuez,      0.018000, 'g'),   -- S/18.00/kg
+    (v_family_id, v_ing_queso_p,   0.008000, 'g'),   -- S/8.00/kg
+    (v_family_id, v_ing_cebolla,   0.001500, 'g'),   -- S/1.50/kg
+    (v_family_id, v_ing_ajo,       0.002000, 'g'),   -- S/2.00/kg
+    (v_family_id, v_ing_aceite,    0.008000, 'ml'),  -- S/8.00/L
+    (v_family_id, v_ing_vainita,   0.004000, 'g'),   -- S/4.00/kg
+    (v_family_id, v_ing_res,       0.018000, 'g'),   -- S/18.00/kg
+    (v_family_id, v_ing_papa_b,    0.003000, 'g'),   -- S/3.00/kg
+    (v_family_id, v_ing_tomate,    0.002000, 'g'),   -- S/2.00/kg
+    (v_family_id, v_ing_sillao,    0.023333, 'ml'),  -- S/3.50 por botella 150ml
+    (v_family_id, v_ing_quinua,    0.028000, 'g'),   -- S/7.00 por 250g
+    (v_family_id, v_ing_zanahoria, 0.001500, 'g'),   -- S/1.50/kg
+    (v_family_id, v_ing_arveja,    0.003000, 'g'),   -- S/3.00/kg
+    (v_family_id, v_ing_lenteja,   0.008000, 'g'),   -- S/4.00 por 500g
+    (v_family_id, v_ing_huevo,     0.916667, 'unit'),-- S/5.50 por 6 huevos
+    (v_family_id, v_ing_cebolla_r, 0.001500, 'g'),   -- S/1.50/kg
+    (v_family_id, v_ing_limon,     0.200000, 'unit'),-- S/0.20 por limón
+    (v_family_id, v_ing_culantro,  0.016667, 'g');   -- S/0.50 por atado 30g
 
 
   -- ────────────────────────────────────────────────────────

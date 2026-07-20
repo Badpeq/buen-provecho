@@ -233,7 +233,7 @@ CREATE TABLE family_ingredient_prices (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   family_id     UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,
   ingredient_id UUID NOT NULL REFERENCES ingredients(id) ON DELETE CASCADE,
-  price         NUMERIC(10,2) NOT NULL,
+  price         NUMERIC(14,6) NOT NULL,
   unit          TEXT NOT NULL,
   recorded_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
