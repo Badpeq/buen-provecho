@@ -6,6 +6,7 @@ import Hoy                  from './pages/Hoy'
 import Planificacion        from './pages/Planificacion'
 import Compras              from './pages/Compras'
 import Configuracion        from './pages/Configuracion'
+import Session              from './pages/Session'
 import { ToastContainer }   from './components/ui/Toast'
 
 function AuthGate() {
@@ -22,7 +23,11 @@ function AuthGate() {
     )
   }
 
-  if (!session) return <Login />
+  if (!session) {
+    // Ruta especial de sesión directa — accesible sin auth
+    if (window.location.pathname === '/session') return <Session />
+    return <Login />
+  }
 
   return (
     <Routes>
