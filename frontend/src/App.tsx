@@ -23,7 +23,26 @@ function nextTuesdayLabel(): string {
   }).format(today)
 }
 
-/** Ruta índice contextual: redirige a Planificación si es día de planificación o no hay plan */
+/**
+ * Devuelve la week_start_date que debería tener un plan activo hoy.
+ * En planning_dow: la semana que EMPIEZA ese ciclo (próximo weekStartDow).
+ * Otros días: la semana en curso.
+ */
+function expectedPlanWeekStart(weekStartDow: number, planningDow: number): string {
+  const today = new Date(limaToday() + 'T12:00:00')
+  const dow   = today.getDay()
+  const d     = new Date(today)
+  if (dow === planningDow) {
+    // Día de planificación: apuntamos a la próxima semana
+    d.setDate(today.getDate() + ((weekStartDow - dow + 7) % 7 || 7))
+  } else {
+    // Resto de días: semana actual
+    d.setDate(today.getDate() - ((dow - weekStartDow + 7) % 7))
+  }
+  return d.toISOString().slice(0, 10)
+}
+
+/** Ruta índice contextual: redirige a Planificación si es día de planificación o no hay plan vigente */
 function ContextualIndex() {
   const { currentFamily, activePlan } = useFamilyStore()
   const navigate   = useNavigate()
@@ -35,7 +54,8 @@ function ContextualIndex() {
 
     const todayDow  = limaDateDow()
     const isPlanDay = todayDow === currentFamily.planning_dow
-    const hasNoPlan = !activePlan
+    const expected  = expectedPlanWeekStart(currentFamily.week_start_dow, currentFamily.planning_dow)
+    const hasNoPlan = !activePlan || activePlan.week_start_date < expected
 
     if (isPlanDay || hasNoPlan) {
       navigate('/planificacion', {

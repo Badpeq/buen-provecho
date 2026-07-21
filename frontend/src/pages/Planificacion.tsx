@@ -10,13 +10,26 @@ import type { DishSlot, DishAssignment, Recipe, WeeklyPlan, MealSlot, ShoppingLi
 const DOW_NAMES = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb']
 const DOW_FULL  = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado']
 const SLOT_KEYS_SHOWN = ['breakfast', 'lunch', 'dinner'] as const
+const MEAL_EMOJI: Record<string, string> = {
+  breakfast: '☕', snack_am: '🥑', lunch: '🍽', snack_pm: '🥑', dinner: '🌙',
+}
+
+// ── Interfaces ────────────────────────────────────────────────────────────────
+
+/** Tarjeta de bloque para el Nivel 1 (una por dish_slot) */
+interface BlockCard {
+  dishSlot: DishSlot
+  mealSlot: MealSlot
+  recipe:   Recipe | null
+  dayLabel: string  // "Mar · Mié"
+}
 
 interface MealRow {
   mealSlot:   MealSlot
   dishSlot:   DishSlot | null
   recipe:     Recipe | null
   assignment: DishAssignment | null
-  shared:     boolean   // true if this almuerzo slot covers >1 day
+  shared:     boolean
 }
 
 interface DayPlan {
@@ -32,17 +45,25 @@ function nextTuesdayFrom(date: Date): string {
   return d.toISOString().slice(0, 10)
 }
 
+// ── Componente ────────────────────────────────────────────────────────────────
+
 export default function Planificacion() {
   const { currentFamily, activePlan, setActivePlan } = useFamilyStore()
   const location = useLocation()
   const navigate  = useNavigate()
   const banner   = (location.state as { banner?: string } | null)?.banner
-  const [days,        setDays]        = useState<DayPlan[]>([])
+
+  // Nivel 1
+  const [blocks,     setBlocks]     = useState<BlockCard[]>([])
+  // Nivel 2
+  const [days,       setDays]       = useState<DayPlan[]>([])
+  const [showGrid,   setShowGrid]   = useState(false)
+
   const [loading,     setLoading]     = useState(true)
   const [creating,    setCreating]    = useState(false)
   const [picker,      setPicker]      = useState<{ dishSlot: DishSlot; mealType: string; dayLabel: string } | null>(null)
-  const [pickerRecipes,      setPickerRecipes]      = useState<Recipe[]>([])
-  const [pickerRecommended, setPickerRecommended]  = useState<Recipe[]>([])
+  const [pickerRecipes,     setPickerRecipes]     = useState<Recipe[]>([])
+  const [pickerRecommended, setPickerRecommended] = useState<Recipe[]>([])
   const [saving,      setSaving]      = useState(false)
   const [cost,        setCost]        = useState<number | null>(null)
   const [costLoading, setCostLoading] = useState(false)
@@ -76,45 +97,49 @@ export default function Planificacion() {
       supabase.from('dish_assignments').select('*, recipes(*)').eq('weekly_plan_id', plan.id).eq('is_adhoc', false),
     ])
 
-    const mealSlots  = (mealSlotsRes.data ?? []) as MealSlot[]
-    const dishSlots  = (dishSlotsRes.data ?? []) as DishSlot[]
+    const mealSlots   = (mealSlotsRes.data ?? []) as MealSlot[]
+    const dishSlots   = (dishSlotsRes.data ?? []) as DishSlot[]
     const assignments = (assignRes.data ?? []) as unknown as Array<DishAssignment & { recipes: Recipe }>
 
-    // Index assignments by dish_slot_id
     const byDishSlot: Record<string, { recipe: Recipe; assignment: DishAssignment }> = {}
     assignments.forEach(a => {
       if (a.dish_slot_id) byDishSlot[a.dish_slot_id] = { recipe: a.recipes, assignment: a }
     })
 
-    // Only show breakfast / lunch / dinner slots
-    const shownMealSlots = mealSlots.filter(ms => (SLOT_KEYS_SHOWN as readonly string[]).includes(ms.slot_key))
-
-    // Build 7 day plans (offset 0..6)
     const weekStart = new Date(plan.week_start_date + 'T12:00:00')
-    const built: DayPlan[] = []
 
+    // ── Nivel 1: una tarjeta por bloque (dish_slot) ───────────────────────────
+    const builtBlocks: BlockCard[] = dishSlots.flatMap(ds => {
+      const ms = mealSlots.find(m => m.id === ds.meal_slot_id)
+      if (!ms) return []
+      const dayLabel = ds.day_offsets.map(o => {
+        const d = new Date(weekStart); d.setDate(d.getDate() + o)
+        return DOW_NAMES[d.getDay()]
+      }).join(' · ')
+      return [{ dishSlot: ds, mealSlot: ms, recipe: byDishSlot[ds.id]?.recipe ?? null, dayLabel }]
+    })
+    setBlocks(builtBlocks)
+
+    // ── Nivel 2: grilla completa de 7 días ───────────────────────────────────
+    const shownMealSlots = mealSlots.filter(ms => (SLOT_KEYS_SHOWN as readonly string[]).includes(ms.slot_key))
+    const builtDays: DayPlan[] = []
     for (let offset = 0; offset < 7; offset++) {
-      const d = new Date(weekStart)
-      d.setDate(d.getDate() + offset)
-
+      const d = new Date(weekStart); d.setDate(d.getDate() + offset)
       const meals: MealRow[] = shownMealSlots.map(ms => {
         const dishSlot = dishSlots.find(ds =>
           ds.meal_slot_id === ms.id && ds.day_offsets.includes(offset)
         ) ?? null
         const assigned = dishSlot ? byDishSlot[dishSlot.id] : undefined
         return {
-          mealSlot:   ms,
-          dishSlot,
+          mealSlot: ms, dishSlot,
           recipe:     assigned?.recipe     ?? null,
           assignment: assigned?.assignment ?? null,
           shared:     (dishSlot?.day_offsets.length ?? 1) > 1,
         }
       })
-
-      built.push({ offset, date: d, meals })
+      builtDays.push({ offset, date: d, meals })
     }
-
-    setDays(built)
+    setDays(builtDays)
     setLoading(false)
     refreshCost(plan.id)
   }
@@ -155,21 +180,14 @@ export default function Planificacion() {
     navigate('/compras')
   }
 
-  async function openPicker(row: MealRow, dayLabel: string) {
-    if (!row.dishSlot) { toast.info('No hay slot configurado para este día'); return }
-    const mealType = row.mealSlot.slot_key === 'breakfast' ? 'breakfast'
-                   : row.mealSlot.slot_key === 'dinner'    ? 'dinner'
-                   : 'lunch'
+  // ── Picker helpers ────────────────────────────────────────────────────────
 
+  async function _loadPickerOptions(mealType: string, suggestedTag: string | null) {
     const [recipesRes, restrictionsRes, historyRes] = await Promise.all([
-      supabase.from('recipes').select('*')
-        .eq('family_id', currentFamily!.id).eq('meal_type', mealType),
-      supabase.from('food_restrictions').select('tag, restriction_type')
-        .eq('family_id', currentFamily!.id),
-      supabase.from('dish_assignments').select('recipe_id')
-        .eq('family_id', currentFamily!.id),
+      supabase.from('recipes').select('*').eq('family_id', currentFamily!.id).eq('meal_type', mealType),
+      supabase.from('food_restrictions').select('tag, restriction_type').eq('family_id', currentFamily!.id),
+      supabase.from('dish_assignments').select('recipe_id').eq('family_id', currentFamily!.id),
     ])
-
     const recipes      = (recipesRes.data      ?? []) as Recipe[]
     const restrictions = (restrictionsRes.data ?? []) as Array<{ tag: string; restriction_type: string }>
     const history      = (historyRes.data      ?? []) as Array<{ recipe_id: string }>
@@ -179,28 +197,40 @@ export default function Planificacion() {
     const freqMap: Record<string, number> = {}
     history.forEach(h => { freqMap[h.recipe_id] = (freqMap[h.recipe_id] ?? 0) + 1 })
 
-    const suggestedTag = row.dishSlot.suggested_tag
-
     const eligible       = recipes.filter(r => !r.tags.some(t => excludeTags.has(t)))
     const hasPreferAvoid = (r: Recipe) => r.tags.some(t => preferAvoidTags.has(t))
-
-    const maxFreq = Math.max(1, ...Object.values(freqMap))
-    const score   = (r: Recipe) =>
+    const maxFreq        = Math.max(1, ...Object.values(freqMap))
+    const score          = (r: Recipe) =>
       (suggestedTag && r.tags.includes(suggestedTag) ? 2 : 0) +
       (freqMap[r.id] ?? 0) / maxFreq
 
-    const candidates = eligible.filter(r => !hasPreferAvoid(r))
-    const avoided    = eligible.filter(r => hasPreferAvoid(r))
-
+    const candidates  = eligible.filter(r => !hasPreferAvoid(r))
+    const avoided     = eligible.filter(r => hasPreferAvoid(r))
     const sorted      = [...candidates].sort((a, b) => score(b) - score(a))
     const recommended = sorted.slice(0, 4).filter(r => score(r) > 0)
-    const rest        = [
-      ...sorted.slice(recommended.length),
-      ...avoided,
-    ].sort((a, b) => a.name.localeCompare(b.name, 'es'))
+    const rest        = [...sorted.slice(recommended.length), ...avoided]
+      .sort((a, b) => a.name.localeCompare(b.name, 'es'))
 
     setPickerRecommended(recommended)
     setPickerRecipes(rest)
+  }
+
+  /** Abre el picker desde una tarjeta de bloque (Nivel 1) */
+  async function openPickerBlock(block: BlockCard) {
+    const mealType = block.mealSlot.slot_key === 'breakfast' ? 'breakfast'
+                   : block.mealSlot.slot_key === 'dinner'    ? 'dinner'
+                   : 'lunch'
+    await _loadPickerOptions(mealType, block.dishSlot.suggested_tag)
+    setPicker({ dishSlot: block.dishSlot, mealType, dayLabel: block.dayLabel })
+  }
+
+  /** Abre el picker desde la grilla completa (Nivel 2) */
+  async function openPicker(row: MealRow, dayLabel: string) {
+    if (!row.dishSlot) { toast.info('No hay slot configurado para este día'); return }
+    const mealType = row.mealSlot.slot_key === 'breakfast' ? 'breakfast'
+                   : row.mealSlot.slot_key === 'dinner'    ? 'dinner'
+                   : 'lunch'
+    await _loadPickerOptions(mealType, row.dishSlot.suggested_tag)
     setPicker({ dishSlot: row.dishSlot, mealType, dayLabel })
   }
 
@@ -216,6 +246,8 @@ export default function Planificacion() {
       family_id:      currentFamily!.id,
       weekly_plan_id: activePlan.id,
       dish_slot_id:   dishSlot.id,
+      meal_slot_id:   dishSlot.meal_slot_id,
+      day_offsets:    dishSlot.day_offsets,
       recipe_id:      recipe.id,
       is_adhoc:       false,
     })
@@ -223,7 +255,7 @@ export default function Planificacion() {
     setSaving(false)
     if (error) { toast.err('Error al asignar'); setPicker(null); return }
 
-    // Update local state for all days that share this dish_slot
+    setBlocks(prev => prev.map(b => b.dishSlot.id === dishSlot.id ? { ...b, recipe } : b))
     setDays(prev => prev.map(day => ({
       ...day,
       meals: day.meals.map(m =>
@@ -239,19 +271,14 @@ export default function Planificacion() {
     if (!activePlan || suggesting) return
     setSuggesting(true)
 
-    // Recopilar dish_slots únicos sin asignar con su meal_type
     const seen = new Map<string, { dishSlot: DishSlot; mealType: string }>()
-    days.forEach(day => {
-      day.meals.forEach(row => {
-        if (row.dishSlot && !row.recipe && !seen.has(row.dishSlot.id)) {
-          seen.set(row.dishSlot.id, {
-            dishSlot: row.dishSlot,
-            mealType: row.mealSlot.slot_key === 'breakfast' ? 'breakfast'
-                    : row.mealSlot.slot_key === 'dinner'    ? 'dinner'
-                    : 'lunch',
-          })
-        }
-      })
+    blocks.forEach(block => {
+      if (!block.recipe) {
+        const mealType = block.mealSlot.slot_key === 'breakfast' ? 'breakfast'
+                       : block.mealSlot.slot_key === 'dinner'    ? 'dinner'
+                       : 'lunch'
+        seen.set(block.dishSlot.id, { dishSlot: block.dishSlot, mealType })
+      }
     })
 
     const unassigned = [...seen.values()]
@@ -300,13 +327,18 @@ export default function Planificacion() {
         .in('dish_slot_id', assignments.map(a => a.dish_slot_id))
 
       await supabase.from('dish_assignments').insert(
-        assignments.map(a => ({
-          family_id:      currentFamily!.id,
-          weekly_plan_id: activePlan.id,
-          dish_slot_id:   a.dish_slot_id,
-          recipe_id:      a.recipe_id,
-          is_adhoc:       false,
-        }))
+        assignments.map(a => {
+          const slot = seen.get(a.dish_slot_id)
+          return {
+            family_id:      currentFamily!.id,
+            weekly_plan_id: activePlan!.id,
+            dish_slot_id:   a.dish_slot_id,
+            meal_slot_id:   slot?.dishSlot.meal_slot_id ?? null,
+            day_offsets:    slot?.dishSlot.day_offsets  ?? null,
+            recipe_id:      a.recipe_id,
+            is_adhoc:       false,
+          }
+        })
       )
 
       await loadAll(activePlan)
@@ -339,8 +371,13 @@ export default function Planificacion() {
       if (prevAssign?.length) {
         await supabase.from('dish_assignments').insert(
           (prevAssign as DishAssignment[]).map(a => ({
-            family_id: currentFamily!.id, weekly_plan_id: newPlan.id,
-            dish_slot_id: a.dish_slot_id, recipe_id: a.recipe_id, is_adhoc: false,
+            family_id:      currentFamily!.id,
+            weekly_plan_id: newPlan.id,
+            dish_slot_id:   a.dish_slot_id,
+            meal_slot_id:   a.meal_slot_id,
+            day_offsets:    a.day_offsets,
+            recipe_id:      a.recipe_id,
+            is_adhoc:       false,
           }))
         )
       }
@@ -350,6 +387,8 @@ export default function Planificacion() {
     setCreating(false)
     await loadAll(newPlan)
   }
+
+  // ── Early returns ─────────────────────────────────────────────────────────
 
   if (!currentFamily) {
     return (
@@ -364,6 +403,10 @@ export default function Planificacion() {
     ? (() => { const d = new Date(activePlan.week_start_date + 'T12:00:00'); d.setDate(d.getDate() + 7); return limaDateStr(d) })()
     : nextTuesdayFrom(new Date())
 
+  // Footer counters (from Level 1 blocks)
+  const totalSlots    = blocks.length
+  const assignedSlots = blocks.filter(b => b.recipe !== null).length
+
   function RecipeOption({ recipe, saving, onPick }: { recipe: Recipe; saving: boolean; onPick: (r: Recipe) => void }) {
     return (
       <button
@@ -377,8 +420,7 @@ export default function Planificacion() {
     )
   }
 
-  const totalSlots    = new Set(days.flatMap(d => d.meals.map(m => m.dishSlot?.id).filter(Boolean))).size
-  const assignedSlots = new Set(days.flatMap(d => d.meals.filter(m => m.recipe && m.dishSlot).map(m => m.dishSlot!.id))).size
+  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div className="px-4 pt-4 pb-32">
@@ -387,7 +429,9 @@ export default function Planificacion() {
           {banner}
         </div>
       )}
-      <div className="flex items-center justify-between mb-4">
+
+      {/* Cabecera */}
+      <div className="flex items-center justify-between mb-1">
         <h1 className="text-lg font-semibold text-gray-800">Menú semanal</h1>
         <div className="flex items-center gap-2">
           {activePlan && (
@@ -404,17 +448,17 @@ export default function Planificacion() {
           </button>
         </div>
       </div>
-
       {activePlan && (
-        <p className="text-sm text-gray-400 mb-4">
+        <p className="text-xs text-gray-400 mb-4">
           Semana del {new Date(activePlan.week_start_date + 'T12:00:00')
             .toLocaleDateString('es-PE', { day: 'numeric', month: 'short' })}
         </p>
       )}
 
+      {/* ── Estado de carga ── */}
       {loading ? (
         <div className="space-y-3">
-          {[1, 2, 3, 4].map(i => <div key={i} className="h-28 rounded-xl bg-gray-100 animate-pulse" />)}
+          {[1, 2, 3, 4].map(i => <div key={i} className="h-20 rounded-2xl bg-gray-100 animate-pulse" />)}
         </div>
       ) : !activePlan ? (
         <div className="text-center py-16 text-gray-400">
@@ -423,59 +467,105 @@ export default function Planificacion() {
           <p className="text-xs">Crea uno con el botón de arriba.</p>
         </div>
       ) : (
-        <div className="space-y-4">
-          {days.map(day => {
-            const dow  = day.date.getDay()
-            const isToday = limaDateStr(day.date) === limaToday()
-            return (
-              <div key={day.offset} className={`rounded-xl border bg-white shadow-sm overflow-hidden ${isToday ? 'border-[var(--color-brand)]' : 'border-gray-100'}`}>
-                {/* Cabecera del día */}
-                <div className={`px-4 py-2 flex items-center gap-2 ${isToday ? 'bg-[var(--color-brand-pale)]' : 'bg-gray-50'}`}>
-                  <span className={`text-sm font-bold ${isToday ? 'text-[var(--color-brand)]' : 'text-gray-700'}`}>
-                    {DOW_FULL[dow]}
-                  </span>
-                  <span className="text-xs text-gray-400">
-                    {day.date.toLocaleDateString('es-PE', { day: 'numeric', month: 'short' })}
-                  </span>
-                  {isToday && <span className="text-xs font-medium text-[var(--color-brand)] ml-auto">Hoy</span>}
-                </div>
+        <>
+          {/* ══ Nivel 1: tarjetas de bloque ══════════════════════════════════ */}
+          <div className="space-y-3">
+            {blocks.map(block => {
+              const emoji    = MEAL_EMOJI[block.mealSlot.slot_key] ?? '🍽'
+              const assigned = block.recipe !== null
+              return (
+                <button
+                  key={block.dishSlot.id}
+                  onClick={() => openPickerBlock(block)}
+                  className={`w-full text-left rounded-2xl border-2 p-4 transition-colors active:scale-[0.98] ${
+                    assigned
+                      ? 'border-[var(--color-brand)] bg-white shadow-sm'
+                      : 'border-dashed border-gray-200 bg-gray-50'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
+                      {emoji} {block.mealSlot.name}
+                    </span>
+                    <span className="text-xs text-gray-400 font-medium">{block.dayLabel}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    {assigned ? (
+                      <p className="font-semibold text-gray-800 truncate">{block.recipe!.name}</p>
+                    ) : (
+                      <p className="text-gray-300 italic text-sm">Por elegir…</p>
+                    )}
+                    <span className={`text-base shrink-0 ${assigned ? 'text-[var(--color-brand)]' : 'text-gray-300'}`}>
+                      {assigned ? '✎' : '+'}
+                    </span>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
 
-                {/* Filas de comidas */}
-                <div className="divide-y divide-gray-50">
-                  {day.meals.map(row => (
-                    <div key={row.mealSlot.id} className="flex items-center gap-3 px-4 py-3">
-                      <div className="w-16 shrink-0">
-                        <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">{row.mealSlot.name}</p>
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        {row.recipe ? (
-                          <p className="text-sm font-medium text-gray-800 truncate">{row.recipe.name}</p>
-                        ) : (
-                          <p className="text-sm text-gray-300 italic">Sin asignar</p>
-                        )}
-                        {row.shared && row.recipe && (
-                          <p className="text-xs text-gray-300">
-                            {row.dishSlot!.day_offsets.map(o => {
-                              const d = new Date(activePlan!.week_start_date + 'T12:00:00')
-                              d.setDate(d.getDate() + o)
-                              return DOW_NAMES[d.getDay()]
-                            }).join('·')}
-                          </p>
-                        )}
-                      </div>
-                      <button
-                        onClick={() => openPicker(row, DOW_FULL[dow])}
-                        className="shrink-0 text-xs px-2.5 py-1 rounded-lg border border-gray-200 text-gray-500 hover:border-[var(--color-brand)] hover:text-[var(--color-brand)] transition-colors"
-                      >
-                        {row.recipe ? '↺' : '+'}
-                      </button>
+          {/* ══ Toggle Nivel 2 ════════════════════════════════════════════════ */}
+          <button
+            onClick={() => setShowGrid(g => !g)}
+            className="w-full mt-4 py-2.5 text-xs text-gray-400 font-medium hover:text-gray-600 flex items-center justify-center gap-1"
+          >
+            {showGrid ? '▲ Ocultar semana completa' : '▼ Ver semana completa'}
+          </button>
+
+          {/* ══ Nivel 2: grilla de 7 días ════════════════════════════════════ */}
+          {showGrid && (
+            <div className="space-y-4 mt-2">
+              {days.map(day => {
+                const dow     = day.date.getDay()
+                const isToday = limaDateStr(day.date) === limaToday()
+                return (
+                  <div key={day.offset} className={`rounded-xl border bg-white shadow-sm overflow-hidden ${isToday ? 'border-[var(--color-brand)]' : 'border-gray-100'}`}>
+                    <div className={`px-4 py-2 flex items-center gap-2 ${isToday ? 'bg-[var(--color-brand-pale)]' : 'bg-gray-50'}`}>
+                      <span className={`text-sm font-bold ${isToday ? 'text-[var(--color-brand)]' : 'text-gray-700'}`}>
+                        {DOW_FULL[dow]}
+                      </span>
+                      <span className="text-xs text-gray-400">
+                        {day.date.toLocaleDateString('es-PE', { day: 'numeric', month: 'short' })}
+                      </span>
+                      {isToday && <span className="text-xs font-medium text-[var(--color-brand)] ml-auto">Hoy</span>}
                     </div>
-                  ))}
-                </div>
-              </div>
-            )
-          })}
-        </div>
+                    <div className="divide-y divide-gray-50">
+                      {day.meals.map(row => (
+                        <div key={row.mealSlot.id} className="flex items-center gap-3 px-4 py-3">
+                          <div className="w-16 shrink-0">
+                            <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">{row.mealSlot.name}</p>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            {row.recipe ? (
+                              <p className="text-sm font-medium text-gray-800 truncate">{row.recipe.name}</p>
+                            ) : (
+                              <p className="text-sm text-gray-300 italic">Sin asignar</p>
+                            )}
+                            {row.shared && row.recipe && (
+                              <p className="text-xs text-gray-300">
+                                {row.dishSlot!.day_offsets.map(o => {
+                                  const d = new Date(activePlan!.week_start_date + 'T12:00:00')
+                                  d.setDate(d.getDate() + o)
+                                  return DOW_NAMES[d.getDay()]
+                                }).join('·')}
+                              </p>
+                            )}
+                          </div>
+                          <button
+                            onClick={() => openPicker(row, DOW_FULL[dow])}
+                            className="shrink-0 text-xs px-2.5 py-1 rounded-lg border border-gray-200 text-gray-500 hover:border-[var(--color-brand)] hover:text-[var(--color-brand)] transition-colors"
+                          >
+                            {row.recipe ? '↺' : '+'}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </>
       )}
 
       {/* ── Footer presupuesto ── */}
@@ -508,7 +598,7 @@ export default function Planificacion() {
               </button>
             ) : (
               <div className="flex flex-col items-end gap-1 shrink-0">
-                <p className="text-xs text-gray-400">{assignedSlots} de {totalSlots} slots</p>
+                <p className="text-xs text-gray-400">{assignedSlots} de {totalSlots} bloques</p>
                 {totalSlots > 0 && (
                   <button
                     onClick={suggestWeek}
