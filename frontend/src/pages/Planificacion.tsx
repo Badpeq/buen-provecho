@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useFamilyStore } from '../store/familyStore'
@@ -67,7 +67,10 @@ export default function Planificacion() {
   const { currentFamily, activePlan, setActivePlan } = useFamilyStore()
   const location = useLocation()
   const navigate  = useNavigate()
-  const banner   = (location.state as { banner?: string } | null)?.banner
+  const locationState = location.state as { banner?: string; autoSuggest?: boolean } | null
+  const banner      = locationState?.banner
+  const autoSuggest = locationState?.autoSuggest
+  const autoSuggestRan = useRef(false)
 
   const [blocks,     setBlocks]     = useState<BlockCard[]>([])
   const [days,       setDays]       = useState<DayPlan[]>([])
@@ -98,6 +101,16 @@ export default function Planificacion() {
     if (!currentFamily) { setLoading(false); return }
     loadAll()
   }, [currentFamily])
+
+  // Auto-ejecutar suggestWeek si la navegación vino con autoSuggest=true
+  useEffect(() => {
+    if (!autoSuggest || autoSuggestRan.current || loading || !activePlan) return
+    if (blocks.some(b => !b.recipe)) {
+      autoSuggestRan.current = true
+      suggestWeek()
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoSuggest, loading, activePlan?.id])
 
   async function loadAll(planToShow?: WeeklyPlan, silent = false) {
     if (!silent) setLoading(true)
@@ -771,7 +784,15 @@ export default function Planificacion() {
             </div>
             <div className="p-4 space-y-2">
               {pickerRecommended.length === 0 && pickerRecipes.length === 0 ? (
-                <p className="text-center text-gray-400 py-8 text-sm">No hay recetas de este tipo aún.</p>
+                <div className="text-center py-8">
+                  <p className="text-gray-400 text-sm mb-4">No hay recetas de este tipo aún.</p>
+                  <button
+                    onClick={() => { setPicker(null); navigate('/recetas') }}
+                    className="px-5 py-2.5 rounded-xl bg-[var(--color-brand)] text-white text-sm font-semibold"
+                  >
+                    ✨ Crear receta con IA
+                  </button>
+                </div>
               ) : (
                 <>
                   {pickerRecommended.length > 0 && (

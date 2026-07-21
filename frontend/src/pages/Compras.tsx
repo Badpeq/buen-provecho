@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useFamilyStore } from '../store/familyStore'
 import { toast } from '../components/ui/Toast'
@@ -9,6 +10,7 @@ type ShoppingListItemWithCat = ShoppingListItem & { category: string }
 
 export default function Compras() {
   const { currentFamily, activePlan } = useFamilyStore()
+  const navigate = useNavigate()
   const [list,        setList]        = useState<ShoppingList | null>(null)
   const [items,       setItems]       = useState<ShoppingListItemWithCat[]>([])
   const [loading,     setLoading]     = useState(true)
@@ -108,16 +110,40 @@ export default function Compras() {
         <div className="space-y-2">
           {[1, 2, 3, 4, 5].map(i => <div key={i} className="h-14 rounded-xl bg-gray-100 animate-pulse" />)}
         </div>
+      ) : !activePlan ? (
+        <div className="flex flex-col items-center text-center py-12 px-4">
+          <span className="text-5xl mb-4">🛒</span>
+          <h2 className="font-semibold text-gray-800 mb-2">Primero planifica tu semana</h2>
+          <p className="text-sm text-gray-400 mb-7 max-w-xs">
+            Elige tus platos y la lista de compras se calcula sola.
+          </p>
+          <button
+            onClick={() => navigate('/planificacion')}
+            className="w-full max-w-xs py-3.5 rounded-2xl bg-[var(--color-brand)] text-white font-semibold text-sm"
+          >
+            → Ir a planificar
+          </button>
+        </div>
       ) : !list || items.length === 0 ? (
-        <div className="text-center py-16 text-gray-400">
-          <p className="text-4xl mb-3">🧺</p>
-          <p className="mb-4">{!activePlan ? 'No hay plan activo.' : 'La lista está vacía.'}</p>
-          {activePlan && (
-            <button onClick={generateList} disabled={generating}
-              className="px-4 py-2 rounded-xl bg-[var(--color-brand)] text-white text-sm font-medium disabled:opacity-40">
-              {generating ? 'Calculando…' : 'Generar lista'}
-            </button>
-          )}
+        <div className="flex flex-col items-center text-center py-12 px-4">
+          <span className="text-5xl mb-4">🧺</span>
+          <h2 className="font-semibold text-gray-800 mb-2">Aún no hay lista</h2>
+          <p className="text-sm text-gray-400 mb-7 max-w-xs">
+            Elige los platos de la semana y genera tu lista con un tap.
+          </p>
+          <button
+            onClick={() => navigate('/planificacion')}
+            className="w-full max-w-xs py-3.5 rounded-2xl bg-[var(--color-brand)] text-white font-semibold text-sm mb-3"
+          >
+            → Elegir platos
+          </button>
+          <button
+            onClick={generateList}
+            disabled={generating}
+            className="text-xs text-gray-400 hover:text-gray-600 disabled:opacity-40"
+          >
+            {generating ? 'Calculando…' : 'Generar lista desde el plan actual'}
+          </button>
         </div>
       ) : (
         <>

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useFamilyStore } from '../store/familyStore'
 import { toast } from '../components/ui/Toast'
@@ -23,6 +24,7 @@ const MEAL_TYPE_FOR_SLOT: Record<string, string> = {
 
 export default function Hoy() {
   const { currentFamily, members } = useFamilyStore()
+  const navigate = useNavigate()
   const [slots,          setSlots]          = useState<SlotWithDish[]>([])
   const [planIdForToday, setPlanIdForToday] = useState<string | null>(null)
   const [loading,        setLoading]        = useState(true)
@@ -281,17 +283,31 @@ export default function Hoy() {
         {capitalizeFirst(limaDateFmt.format(new Date()))}
       </h1>
 
-      {!planIdForToday && !loading && (
-        <div className="mb-4 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-700">
-          No hay plan activo para esta semana. Crea uno en Planificación para asignar platos.
-        </div>
-      )}
-
       {loading ? (
         <div className="space-y-3">
           {[1, 2, 3, 4, 5].map(i => (
             <div key={i} className="h-20 rounded-xl bg-gray-100 animate-pulse" />
           ))}
+        </div>
+      ) : !planIdForToday ? (
+        <div className="flex flex-col items-center text-center py-12 px-4">
+          <span className="text-5xl mb-4">📅</span>
+          <h2 className="font-semibold text-gray-800 mb-2">Tu semana no está planificada</h2>
+          <p className="text-sm text-gray-400 mb-7 max-w-xs">
+            Elige tus platos el domingo y ten tu lista de compras lista en minutos.
+          </p>
+          <button
+            onClick={() => navigate('/planificacion', { state: { autoSuggest: true } })}
+            className="w-full max-w-xs py-3.5 rounded-2xl bg-[var(--color-brand)] text-white font-semibold text-sm mb-3"
+          >
+            ✨ Sugerir mi semana
+          </button>
+          <button
+            onClick={() => navigate('/planificacion')}
+            className="text-xs text-gray-400 hover:text-gray-600"
+          >
+            Elegir manualmente →
+          </button>
         </div>
       ) : (
         <div className="space-y-3">
@@ -374,7 +390,15 @@ export default function Hoy() {
             </div>
             <div className="p-4 space-y-2">
               {pickerRecipes.length === 0 ? (
-                <p className="text-center text-gray-400 py-8 text-sm">No hay recetas de este tipo. Crea una en la sección Recetas.</p>
+                <div className="text-center py-8">
+                  <p className="text-gray-400 text-sm mb-4">No hay recetas de este tipo aún.</p>
+                  <button
+                    onClick={() => { setPicker(null); navigate('/recetas') }}
+                    className="px-5 py-2.5 rounded-xl bg-[var(--color-brand)] text-white text-sm font-semibold"
+                  >
+                    ✨ Crear receta con IA
+                  </button>
+                </div>
               ) : pickerRecipes.map(recipe => (
                 <button
                   key={recipe.id}
