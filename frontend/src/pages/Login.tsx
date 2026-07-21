@@ -29,12 +29,34 @@ export default function Login() {
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-6 bg-[var(--color-bg)]">
       {/* Logo / Marca */}
-      <div className="mb-8 text-center">
+      <div className="mb-6 text-center">
         <div className="w-16 h-16 rounded-2xl bg-[var(--color-brand)] flex items-center justify-center mx-auto mb-4 text-3xl">
           🍽️
         </div>
         <h1 className="text-2xl font-bold text-gray-900">Buen Provecho</h1>
-        <p className="text-sm text-gray-500 mt-1">Planificación familiar de comidas</p>
+      </div>
+
+      {/* La promesa */}
+      <div className="mb-7 text-center max-w-xs">
+        <p className="text-base font-semibold text-gray-800 leading-snug mb-5">
+          Elige 4 platos el domingo.<br />
+          Tu semana y tu lista de compras<br />
+          con presupuesto, listas.
+        </p>
+        <ul className="space-y-2 text-sm text-gray-500 text-left inline-block">
+          <li className="flex items-center gap-2.5">
+            <span className="text-[var(--color-brand)] font-bold shrink-0">✓</span>
+            <span>5 minutos el domingo</span>
+          </li>
+          <li className="flex items-center gap-2.5">
+            <span className="text-[var(--color-brand)] font-bold shrink-0">✓</span>
+            <span>Presupuesto antes de comprar</span>
+          </li>
+          <li className="flex items-center gap-2.5">
+            <span className="text-[var(--color-brand)] font-bold shrink-0">✓</span>
+            <span>Lista directa a WhatsApp</span>
+          </li>
+        </ul>
       </div>
 
       {step === 'sent' ? (
