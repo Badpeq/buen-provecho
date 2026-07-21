@@ -100,7 +100,7 @@ END $$;
 DO $$ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_policies
-    WHERE polname = 'dp_self_write' AND tablename = 'dietary_patterns'
+    WHERE policyname = 'dp_self_write' AND tablename = 'dietary_patterns'
   ) THEN
     CREATE POLICY "dp_self_write" ON dietary_patterns
       FOR INSERT WITH CHECK (
@@ -116,7 +116,7 @@ END $$;
 DO $$ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_policies
-    WHERE polname = 'dp_self_update' AND tablename = 'dietary_patterns'
+    WHERE policyname = 'dp_self_update' AND tablename = 'dietary_patterns'
   ) THEN
     CREATE POLICY "dp_self_update" ON dietary_patterns
       FOR UPDATE USING (
@@ -132,7 +132,7 @@ END $$;
 DO $$ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_policies
-    WHERE polname = 'dp_self_delete' AND tablename = 'dietary_patterns'
+    WHERE policyname = 'dp_self_delete' AND tablename = 'dietary_patterns'
   ) THEN
     CREATE POLICY "dp_self_delete" ON dietary_patterns
       FOR DELETE USING (
@@ -149,7 +149,7 @@ END $$;
 DO $$ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_policies
-    WHERE polname = 'cl_member_delete' AND tablename = 'consumption_log'
+    WHERE policyname = 'cl_member_delete' AND tablename = 'consumption_log'
   ) THEN
     CREATE POLICY "cl_member_delete" ON consumption_log
       FOR DELETE USING (family_id = ANY(get_user_family_ids()));
