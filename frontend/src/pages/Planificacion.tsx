@@ -14,14 +14,30 @@ const MEAL_EMOJI: Record<string, string> = {
   breakfast: '☕', snack_am: '🥑', lunch: '🍽', snack_pm: '🥑', dinner: '🌙',
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** Agrupa números en runs consecutivos: [0,2,3] → [[0],[2,3]] */
+function groupConsecutive(offsets: number[]): number[][] {
+  if (!offsets.length) return []
+  const sorted = [...offsets].sort((a, b) => a - b)
+  const groups: number[][] = [[sorted[0]]]
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i] === sorted[i - 1] + 1) groups[groups.length - 1].push(sorted[i])
+    else groups.push([sorted[i]])
+  }
+  return groups
+}
+
 // ── Interfaces ────────────────────────────────────────────────────────────────
 
-/** Tarjeta de bloque para el Nivel 1 (una por dish_slot) */
 interface BlockCard {
-  dishSlot: DishSlot
-  mealSlot: MealSlot
-  recipe:   Recipe | null
-  dayLabel: string  // "Mar · Mié"
+  mealSlot:    MealSlot
+  recipe:      Recipe | null
+  dayLabel:    string        // "Mar · Mié"
+  dayOffsets:  number[]      // offsets reales que cubre este bloque
+  startOffset: number        // primer offset (para orden y cálculo de días)
+  dishSlot:    DishSlot | null  // referencia al preset (puede ser null para bloques dinámicos)
+  assignment:  DishAssignment | null
 }
 
 interface MealRow {
@@ -53,17 +69,25 @@ export default function Planificacion() {
   const navigate  = useNavigate()
   const banner   = (location.state as { banner?: string } | null)?.banner
 
-  // Nivel 1
   const [blocks,     setBlocks]     = useState<BlockCard[]>([])
-  // Nivel 2
   const [days,       setDays]       = useState<DayPlan[]>([])
   const [showGrid,   setShowGrid]   = useState(false)
 
   const [loading,     setLoading]     = useState(true)
   const [creating,    setCreating]    = useState(false)
-  const [picker,      setPicker]      = useState<{ dishSlot: DishSlot; mealType: string; dayLabel: string } | null>(null)
+
+  // Picker paso 1: lista de recetas
+  const [picker, setPicker] = useState<{
+    block: BlockCard; mealType: string; useF2: boolean
+  } | null>(null)
   const [pickerRecipes,     setPickerRecipes]     = useState<Recipe[]>([])
   const [pickerRecommended, setPickerRecommended] = useState<Recipe[]>([])
+
+  // Picker paso 2: selector de días (F2)
+  const [dayStep, setDayStep] = useState<{
+    recipe: Recipe; block: BlockCard; selectedDays: number; maxDays: number
+  } | null>(null)
+
   const [saving,      setSaving]      = useState(false)
   const [cost,        setCost]        = useState<number | null>(null)
   const [costLoading, setCostLoading] = useState(false)
@@ -75,8 +99,8 @@ export default function Planificacion() {
     loadAll()
   }, [currentFamily])
 
-  async function loadAll(planToShow?: WeeklyPlan) {
-    setLoading(true)
+  async function loadAll(planToShow?: WeeklyPlan, silent = false) {
+    if (!silent) setLoading(true)
     let plan = planToShow ?? null
 
     if (!plan) {
@@ -89,7 +113,7 @@ export default function Planificacion() {
     }
     setActivePlan(plan)
 
-    if (!plan) { setLoading(false); return }
+    if (!plan) { if (!silent) setLoading(false); return }
 
     const [mealSlotsRes, dishSlotsRes, assignRes] = await Promise.all([
       supabase.from('meal_slots').select('*').eq('family_id', currentFamily!.id).order('sort_order'),
@@ -101,26 +125,73 @@ export default function Planificacion() {
     const dishSlots   = (dishSlotsRes.data ?? []) as DishSlot[]
     const assignments = (assignRes.data ?? []) as unknown as Array<DishAssignment & { recipes: Recipe }>
 
-    const byDishSlot: Record<string, { recipe: Recipe; assignment: DishAssignment }> = {}
-    assignments.forEach(a => {
-      if (a.dish_slot_id) byDishSlot[a.dish_slot_id] = { recipe: a.recipes, assignment: a }
-    })
-
     const weekStart = new Date(plan.week_start_date + 'T12:00:00')
 
-    // ── Nivel 1: una tarjeta por bloque (dish_slot) ───────────────────────────
-    const builtBlocks: BlockCard[] = dishSlots.flatMap(ds => {
-      const ms = mealSlots.find(m => m.id === ds.meal_slot_id)
-      if (!ms) return []
-      const dayLabel = ds.day_offsets.map(o => {
+    // ── Nivel 1: bloques dinámicos ─────────────────────────────────────────
+
+    // Pasada 1: asignaciones existentes → una tarjeta por assignment
+    const coveredBySlot: Record<string, Set<number>> = {}
+    mealSlots.forEach(ms => { coveredBySlot[ms.id] = new Set() })
+
+    const builtBlocks: BlockCard[] = []
+
+    for (const a of assignments) {
+      if (!a.meal_slot_id || !a.day_offsets) continue
+      const ms = mealSlots.find(m => m.id === a.meal_slot_id)
+      if (!ms) continue
+      a.day_offsets.forEach(o => coveredBySlot[ms.id].add(o))
+      const dayLabel = a.day_offsets.map(o => {
         const d = new Date(weekStart); d.setDate(d.getDate() + o)
         return DOW_NAMES[d.getDay()]
       }).join(' · ')
-      return [{ dishSlot: ds, mealSlot: ms, recipe: byDishSlot[ds.id]?.recipe ?? null, dayLabel }]
+      builtBlocks.push({
+        mealSlot: ms,
+        recipe:   a.recipes,
+        dayLabel,
+        dayOffsets:  a.day_offsets,
+        startOffset: a.day_offsets[0] ?? 0,
+        dishSlot:    dishSlots.find(d => d.id === a.dish_slot_id) ?? null,
+        assignment:  a as unknown as DishAssignment,
+      })
+    }
+
+    // Pasada 2: días libres dentro de presets → agrupados en runs consecutivos
+    for (const ds of dishSlots) {
+      const ms = mealSlots.find(m => m.id === ds.meal_slot_id)
+      if (!ms) continue
+      const covered    = coveredBySlot[ms.id] ?? new Set()
+      const freeOffset = ds.day_offsets.filter(o => !covered.has(o))
+      for (const group of groupConsecutive(freeOffset)) {
+        const dayLabel = group.map(o => {
+          const d = new Date(weekStart); d.setDate(d.getDate() + o)
+          return DOW_NAMES[d.getDay()]
+        }).join(' · ')
+        builtBlocks.push({
+          mealSlot: ms,
+          recipe:      null,
+          dayLabel,
+          dayOffsets:  group,
+          startOffset: group[0],
+          dishSlot:    ds,
+          assignment:  null,
+        })
+      }
+    }
+
+    // Ordenar por meal_slot.sort_order, luego por startOffset
+    builtBlocks.sort((a, b) => {
+      const ia = mealSlots.indexOf(a.mealSlot)
+      const ib = mealSlots.indexOf(b.mealSlot)
+      return ia !== ib ? ia - ib : a.startOffset - b.startOffset
     })
     setBlocks(builtBlocks)
 
-    // ── Nivel 2: grilla completa de 7 días ───────────────────────────────────
+    // ── Nivel 2: grilla de 7 días ─────────────────────────────────────────
+    const byDishSlot: Record<string, { recipe: Recipe; assignment: DishAssignment }> = {}
+    assignments.forEach(a => {
+      if (a.dish_slot_id) byDishSlot[a.dish_slot_id] = { recipe: a.recipes, assignment: a as unknown as DishAssignment }
+    })
+
     const shownMealSlots = mealSlots.filter(ms => (SLOT_KEYS_SHOWN as readonly string[]).includes(ms.slot_key))
     const builtDays: DayPlan[] = []
     for (let offset = 0; offset < 7; offset++) {
@@ -140,7 +211,7 @@ export default function Planificacion() {
       builtDays.push({ offset, date: d, meals })
     }
     setDays(builtDays)
-    setLoading(false)
+    if (!silent) setLoading(false)
     refreshCost(plan.id)
   }
 
@@ -151,33 +222,68 @@ export default function Planificacion() {
     setCostLoading(false)
   }
 
-  async function generateAndShare() {
-    if (!activePlan || sharing) return
-    setSharing(true)
-    await supabase.rpc('generate_shopping_list_snapshot', {
-      p_weekly_plan_id: activePlan.id,
-      p_deduction_mode: 'net',
-    })
-    await supabase.from('weekly_plans')
-      .update({ status: 'planned' } as Partial<WeeklyPlan>)
-      .eq('id', activePlan.id)
-    setActivePlan({ ...activePlan, status: 'planned' })
-    const { data: rawList } = await supabase
-      .from('shopping_lists').select('id')
-      .eq('weekly_plan_id', activePlan.id)
-      .order('created_at', { ascending: false }).limit(1)
-    const listId = ((rawList ?? []) as Array<{ id: string }>)[0]?.id
-    if (listId) {
-      const { data: rawItems } = await supabase
-        .from('shopping_list_items')
-        .select('*, ingredient:ingredients!shopping_list_items_display_ingredient_id_fkey(category)')
-        .eq('shopping_list_id', listId).order('display_name')
-      const waItems = ((rawItems ?? []) as unknown as Array<ShoppingListItem & { ingredient?: { category: string } | null }>)
-        .map(i => ({ ...i, category: normalizeCategory(i.ingredient?.category) }))
-      shareWhatsApp(waItems)
+  // ── F2: días libres consecutivos desde block.startOffset ──────────────────
+
+  function computeFreeDays(block: BlockCard): number {
+    const covered = new Set<number>()
+    for (const b of blocks) {
+      if (
+        b.mealSlot.id === block.mealSlot.id &&
+        b.assignment !== null &&
+        b.assignment.id !== (block.assignment?.id ?? '')
+      ) {
+        b.dayOffsets.forEach(o => covered.add(o))
+      }
     }
-    setSharing(false)
-    navigate('/compras')
+    let count = 0
+    for (let o = block.startOffset; o < 7; o++) {
+      if (covered.has(o)) break
+      count++
+    }
+    return count
+  }
+
+  // ── Assign core ───────────────────────────────────────────────────────────
+
+  async function assignWithOffsets(block: BlockCard, recipe: Recipe, dayOffsets: number[]) {
+    if (!activePlan) return
+    setSaving(true)
+
+    // Borrar asignación actual del bloque (por ID)
+    if (block.assignment) {
+      await supabase.from('dish_assignments').delete().eq('id', block.assignment.id)
+    }
+
+    // Borrar asignaciones que solapen con los nuevos offsets (mismo meal_slot)
+    const conflictIds = blocks
+      .filter(b =>
+        b.mealSlot.id === block.mealSlot.id &&
+        b.assignment !== null &&
+        b.assignment.id !== (block.assignment?.id ?? '') &&
+        b.dayOffsets.some(o => dayOffsets.includes(o))
+      )
+      .map(b => b.assignment!.id)
+
+    if (conflictIds.length > 0) {
+      await supabase.from('dish_assignments').delete().in('id', conflictIds)
+    }
+
+    const { error } = await supabase.from('dish_assignments').insert({
+      family_id:      currentFamily!.id,
+      weekly_plan_id: activePlan.id,
+      dish_slot_id:   block.dishSlot?.id ?? null,
+      meal_slot_id:   block.mealSlot.id,
+      day_offsets:    dayOffsets,
+      recipe_id:      recipe.id,
+      is_adhoc:       false,
+    })
+
+    setSaving(false)
+    setDayStep(null)
+    setPicker(null)
+    if (error) { toast.err('Error al asignar'); return }
+    toast.ok(`${recipe.name} asignado ✓`)
+    await loadAll(activePlan, true)
   }
 
   // ── Picker helpers ────────────────────────────────────────────────────────
@@ -215,69 +321,106 @@ export default function Planificacion() {
     setPickerRecipes(rest)
   }
 
-  /** Abre el picker desde una tarjeta de bloque (Nivel 1) */
+  /** Abre el picker con F2 (Nivel 1) */
   async function openPickerBlock(block: BlockCard) {
     const mealType = block.mealSlot.slot_key === 'breakfast' ? 'breakfast'
                    : block.mealSlot.slot_key === 'dinner'    ? 'dinner'
                    : 'lunch'
-    await _loadPickerOptions(mealType, block.dishSlot.suggested_tag)
-    setPicker({ dishSlot: block.dishSlot, mealType, dayLabel: block.dayLabel })
+    await _loadPickerOptions(mealType, block.dishSlot?.suggested_tag ?? null)
+    setPicker({ block, mealType, useF2: true })
   }
 
-  /** Abre el picker desde la grilla completa (Nivel 2) */
+  /** Abre el picker directo (Nivel 2 — sin selector de días) */
   async function openPicker(row: MealRow, dayLabel: string) {
     if (!row.dishSlot) { toast.info('No hay slot configurado para este día'); return }
     const mealType = row.mealSlot.slot_key === 'breakfast' ? 'breakfast'
                    : row.mealSlot.slot_key === 'dinner'    ? 'dinner'
                    : 'lunch'
     await _loadPickerOptions(mealType, row.dishSlot.suggested_tag)
-    setPicker({ dishSlot: row.dishSlot, mealType, dayLabel })
+    const syntheticBlock: BlockCard = {
+      mealSlot:    row.mealSlot,
+      recipe:      row.recipe,
+      dayLabel,
+      dayOffsets:  row.dishSlot.day_offsets,
+      startOffset: row.dishSlot.day_offsets[0] ?? 0,
+      dishSlot:    row.dishSlot,
+      assignment:  row.assignment,
+    }
+    setPicker({ block: syntheticBlock, mealType, useF2: false })
   }
 
-  async function assignRecipe(recipe: Recipe) {
-    if (!picker || !activePlan || saving) return
-    setSaving(true)
-    const { dishSlot } = picker
+  async function handleRecipePick(recipe: Recipe) {
+    if (!picker || saving) return
+    const { block, useF2 } = picker
 
-    await supabase.from('dish_assignments').delete()
-      .eq('weekly_plan_id', activePlan.id).eq('dish_slot_id', dishSlot.id).eq('is_adhoc', false)
+    if (!useF2) {
+      // Nivel 2: asignar directo con los offsets del bloque preset
+      setPicker(null)
+      await assignWithOffsets(block, recipe, block.dayOffsets)
+      return
+    }
 
-    const { error } = await supabase.from('dish_assignments').insert({
-      family_id:      currentFamily!.id,
-      weekly_plan_id: activePlan.id,
-      dish_slot_id:   dishSlot.id,
-      meal_slot_id:   dishSlot.meal_slot_id,
-      day_offsets:    dishSlot.day_offsets,
-      recipe_id:      recipe.id,
-      is_adhoc:       false,
-    })
+    // Nivel 1 — F2: calcular días disponibles
+    const freeDays = computeFreeDays(block)
+    const maxDays  = recipe.batch_friendly
+      ? Math.min(recipe.max_batch_days, freeDays)
+      : 1
 
-    setSaving(false)
-    if (error) { toast.err('Error al asignar'); setPicker(null); return }
+    if (maxDays <= 1) {
+      // Un solo día disponible o receta no batch-friendly → asignar directo
+      setPicker(null)
+      await assignWithOffsets(block, recipe, [block.startOffset])
+      return
+    }
 
-    setBlocks(prev => prev.map(b => b.dishSlot.id === dishSlot.id ? { ...b, recipe } : b))
-    setDays(prev => prev.map(day => ({
-      ...day,
-      meals: day.meals.map(m =>
-        m.dishSlot?.id === dishSlot.id ? { ...m, recipe, assignment: null } : m
-      ),
-    })))
-    toast.ok(`${recipe.name} asignado ✓`)
+    // Mostrar selector de días
     setPicker(null)
-    if (activePlan) refreshCost(activePlan.id)
+    setDayStep({ recipe, block, selectedDays: maxDays, maxDays })
+  }
+
+  // ── Other actions ─────────────────────────────────────────────────────────
+
+  async function generateAndShare() {
+    if (!activePlan || sharing) return
+    setSharing(true)
+    await supabase.rpc('generate_shopping_list_snapshot', {
+      p_weekly_plan_id: activePlan.id,
+      p_deduction_mode: 'net',
+    })
+    await supabase.from('weekly_plans')
+      .update({ status: 'planned' } as Partial<WeeklyPlan>)
+      .eq('id', activePlan.id)
+    setActivePlan({ ...activePlan, status: 'planned' })
+    const { data: rawList } = await supabase
+      .from('shopping_lists').select('id')
+      .eq('weekly_plan_id', activePlan.id)
+      .order('created_at', { ascending: false }).limit(1)
+    const listId = ((rawList ?? []) as Array<{ id: string }>)[0]?.id
+    if (listId) {
+      const { data: rawItems } = await supabase
+        .from('shopping_list_items')
+        .select('*, ingredient:ingredients!shopping_list_items_display_ingredient_id_fkey(category)')
+        .eq('shopping_list_id', listId).order('display_name')
+      const waItems = ((rawItems ?? []) as unknown as Array<ShoppingListItem & { ingredient?: { category: string } | null }>)
+        .map(i => ({ ...i, category: normalizeCategory(i.ingredient?.category) }))
+      shareWhatsApp(waItems)
+    }
+    setSharing(false)
+    navigate('/compras')
   }
 
   async function suggestWeek() {
     if (!activePlan || suggesting) return
     setSuggesting(true)
 
-    const seen = new Map<string, { dishSlot: DishSlot; mealType: string }>()
+    // Primer bloque libre de cada dish_slot (preset)
+    const seen = new Map<string, { block: BlockCard; mealType: string }>()
     blocks.forEach(block => {
-      if (!block.recipe) {
+      if (!block.recipe && block.dishSlot && !seen.has(block.dishSlot.id)) {
         const mealType = block.mealSlot.slot_key === 'breakfast' ? 'breakfast'
                        : block.mealSlot.slot_key === 'dinner'    ? 'dinner'
                        : 'lunch'
-        seen.set(block.dishSlot.id, { dishSlot: block.dishSlot, mealType })
+        seen.set(block.dishSlot.id, { block, mealType })
       }
     })
 
@@ -303,19 +446,19 @@ export default function Planificacion() {
         body: JSON.stringify({
           country:      currentFamily!.country_code,
           dish_slots:   unassigned.map(u => ({
-            id:            u.dishSlot.id,
-            name:          u.dishSlot.name,
+            id:            u.block.dishSlot!.id,
+            name:          u.block.dishSlot!.name,
             meal_type:     u.mealType,
-            suggested_tag: u.dishSlot.suggested_tag,
-            day_offsets:   u.dishSlot.day_offsets,
+            suggested_tag: u.block.dishSlot!.suggested_tag,
+            day_offsets:   u.block.dayOffsets,
           })),
           recipes:      allRecipes,
           restrictions: (restrictionsRes.data ?? []).map(r => ({ tag: r.tag, type: r.restriction_type })),
         }),
       })
 
-      const assignments = await apiRes.json() as Array<{ dish_slot_id: string; recipe_id: string }>
-      if (!Array.isArray(assignments) || assignments.length === 0) {
+      const aiAssignments = await apiRes.json() as Array<{ dish_slot_id: string; recipe_id: string }>
+      if (!Array.isArray(aiAssignments) || aiAssignments.length === 0) {
         toast.info('No hay recetas suficientes para sugerir la semana')
         setSuggesting(false)
         return
@@ -324,25 +467,25 @@ export default function Planificacion() {
       await supabase.from('dish_assignments').delete()
         .eq('weekly_plan_id', activePlan.id)
         .eq('is_adhoc', false)
-        .in('dish_slot_id', assignments.map(a => a.dish_slot_id))
+        .in('dish_slot_id', aiAssignments.map(a => a.dish_slot_id))
 
       await supabase.from('dish_assignments').insert(
-        assignments.map(a => {
-          const slot = seen.get(a.dish_slot_id)
+        aiAssignments.map(a => {
+          const entry = seen.get(a.dish_slot_id)
           return {
             family_id:      currentFamily!.id,
             weekly_plan_id: activePlan!.id,
             dish_slot_id:   a.dish_slot_id,
-            meal_slot_id:   slot?.dishSlot.meal_slot_id ?? null,
-            day_offsets:    slot?.dishSlot.day_offsets  ?? null,
+            meal_slot_id:   entry?.block.mealSlot.id ?? null,
+            day_offsets:    entry?.block.dayOffsets   ?? null,
             recipe_id:      a.recipe_id,
             is_adhoc:       false,
           }
         })
       )
 
-      await loadAll(activePlan)
-      toast.ok(`${assignments.length} platos sugeridos ✓`)
+      await loadAll(activePlan, true)
+      toast.ok(`${aiAssignments.length} platos sugeridos ✓`)
     } catch {
       toast.err('Error al sugerir la semana')
     }
@@ -403,11 +546,10 @@ export default function Planificacion() {
     ? (() => { const d = new Date(activePlan.week_start_date + 'T12:00:00'); d.setDate(d.getDate() + 7); return limaDateStr(d) })()
     : nextTuesdayFrom(new Date())
 
-  // Footer counters (from Level 1 blocks)
   const totalSlots    = blocks.length
   const assignedSlots = blocks.filter(b => b.recipe !== null).length
 
-  function RecipeOption({ recipe, saving, onPick }: { recipe: Recipe; saving: boolean; onPick: (r: Recipe) => void }) {
+  function RecipeOption({ recipe, onPick }: { recipe: Recipe; onPick: (r: Recipe) => void }) {
     return (
       <button
         disabled={saving}
@@ -470,12 +612,12 @@ export default function Planificacion() {
         <>
           {/* ══ Nivel 1: tarjetas de bloque ══════════════════════════════════ */}
           <div className="space-y-3">
-            {blocks.map(block => {
+            {blocks.map((block, i) => {
               const emoji    = MEAL_EMOJI[block.mealSlot.slot_key] ?? '🍽'
               const assigned = block.recipe !== null
               return (
                 <button
-                  key={block.dishSlot.id}
+                  key={`${block.mealSlot.id}-${block.startOffset}-${i}`}
                   onClick={() => openPickerBlock(block)}
                   className={`w-full text-left rounded-2xl border-2 p-4 transition-colors active:scale-[0.98] ${
                     assigned
@@ -614,13 +756,13 @@ export default function Planificacion() {
         </div>
       )}
 
-      {/* ── Modal picker ── */}
+      {/* ── Picker paso 1: lista de recetas ── */}
       {picker && (
         <div className="fixed inset-0 z-50 flex items-end bg-black/40" onClick={() => setPicker(null)}>
           <div className="w-full bg-white rounded-t-2xl max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="sticky top-0 bg-white px-4 pt-4 pb-3 border-b border-gray-100 flex items-center justify-between">
               <div>
-                <p className="text-xs text-gray-400 uppercase tracking-wide">{picker.dayLabel}</p>
+                <p className="text-xs text-gray-400 uppercase tracking-wide">{picker.block.dayLabel}</p>
                 <h2 className="font-semibold text-gray-800">
                   Elige el {picker.mealType === 'breakfast' ? 'desayuno' : picker.mealType === 'dinner' ? 'plato de cena' : 'plato de almuerzo'}
                 </h2>
@@ -638,7 +780,7 @@ export default function Planificacion() {
                         Recomendados
                       </p>
                       {pickerRecommended.map(recipe => (
-                        <RecipeOption key={recipe.id} recipe={recipe} saving={saving} onPick={assignRecipe} />
+                        <RecipeOption key={recipe.id} recipe={recipe} onPick={handleRecipePick} />
                       ))}
                       {pickerRecipes.length > 0 && (
                         <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide pt-3 pb-1">
@@ -648,10 +790,70 @@ export default function Planificacion() {
                     </>
                   )}
                   {pickerRecipes.map(recipe => (
-                    <RecipeOption key={recipe.id} recipe={recipe} saving={saving} onPick={assignRecipe} />
+                    <RecipeOption key={recipe.id} recipe={recipe} onPick={handleRecipePick} />
                   ))}
                 </>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Picker paso 2: selector de días (F2) ── */}
+      {dayStep && (
+        <div className="fixed inset-0 z-50 flex items-end bg-black/40">
+          <div className="w-full bg-white rounded-t-2xl p-6" onClick={e => e.stopPropagation()}>
+            <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">
+              {dayStep.block.mealSlot.name}
+            </p>
+            <h2 className="font-semibold text-gray-800 mb-4">{dayStep.recipe.name}</h2>
+
+            <p className="text-sm font-medium text-gray-600 mb-3">Cocinar para:</p>
+
+            <div className="flex gap-2 mb-4">
+              {Array.from({ length: dayStep.maxDays }, (_, i) => i + 1).map(n => (
+                <button
+                  key={n}
+                  onClick={() => setDayStep(d => d ? { ...d, selectedDays: n } : d)}
+                  className={`flex-1 py-3 rounded-xl border-2 font-semibold text-sm transition-colors ${
+                    dayStep.selectedDays === n
+                      ? 'border-[var(--color-brand)] bg-[var(--color-brand-pale)] text-[var(--color-brand)]'
+                      : 'border-gray-200 text-gray-500'
+                  }`}
+                >
+                  {n} {n === 1 ? 'día' : 'días'}
+                </button>
+              ))}
+            </div>
+
+            <p className="text-xs text-center text-gray-400 mb-5">
+              {Array.from({ length: dayStep.selectedDays }, (_, i) => {
+                const d = new Date(activePlan!.week_start_date + 'T12:00:00')
+                d.setDate(d.getDate() + dayStep.block.startOffset + i)
+                return DOW_NAMES[d.getDay()]
+              }).join(' · ')}
+            </p>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => { setDayStep(null); openPickerBlock(dayStep.block) }}
+                className="flex-1 py-3 rounded-xl border border-gray-200 text-gray-600 text-sm font-medium"
+              >
+                ← Cambiar receta
+              </button>
+              <button
+                disabled={saving}
+                onClick={() => {
+                  const offsets = Array.from(
+                    { length: dayStep.selectedDays },
+                    (_, i) => dayStep.block.startOffset + i
+                  )
+                  assignWithOffsets(dayStep.block, dayStep.recipe, offsets)
+                }}
+                className="flex-1 py-3 rounded-xl bg-[var(--color-brand)] text-white font-semibold text-sm disabled:opacity-50"
+              >
+                {saving ? '…' : 'Confirmar'}
+              </button>
             </div>
           </div>
         </div>
